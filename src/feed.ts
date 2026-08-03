@@ -1,0 +1,244 @@
+/**
+ * The single consumer of the event log — SignalFeed (§5 consumption rules).
+ *
+ * Delivery path: the feed reads `events.jsonl` in sequence order past its
+ * cursors and processes each entry; an in-process callback (see events.ts
+ * `onEventAppended`) is only a *notification* that new events exist — never a
+ * delivery path. One consumer ⇒ no duplicates by construction; cursors advance
+ * only after the entry is processed.
+ *
+ * Two cursors (consumer.json — §3 lets UI consumers have their own cursor):
+ * - `orchestrator`    — the watermark. Advances when an entry is *consumed*:
+ *   informational entries (progress, commands) at render; action signals
+ *   (needs_input / finished / error) when the orchestrator LLM is woken, or
+ *   queued for next-turn injection (startup / non-interactive mode).
+ * - `orchestrator-ui` — the render position. Advances when a card is appended.
+ *   Cards persist in the session file, so a restart re-renders only entries
+ *   past this cursor ("consumed ones don't re-render"; "exactly once").
+ *
+ * Wake policy (§13 open question 1 — resolved here):
+ *   Wake the orchestrator on `needs_input` / `finished` / `error` addressed to
+ *   it; NEVER on bare `progress`. Commands (orchestrator → agent) never wake.
+ *   `requires` is a hint for what the orchestrator does once woken, not a
+ *   routing trigger.
+ */
+import {
+  ORCHESTRATOR_ID,
+  UI_CONSUMER_ID,
+  isSignalType,
+  type MaestroEvent,
+  type RegistryAgent,
+} from "./types.ts";
+import { onEventAppended } from "./events.ts";
+import { getRuntime, onRuntimeReady, type MaestroRuntime } from "./runtime.ts";
+import { applySignalStatus } from "./control.ts";
+
+/** What the feed needs from the session to do its job (index.ts supplies it). */
+export interface FeedSink {
+  /** May the orchestrator be woken right now? False in non-interactive modes. */
+  canWake(): boolean;
+  /** Render a durable card for this event (e.g. pi.appendEntry). Must complete before the cursor advances. */
+  onCard(event: MaestroEvent): void | Promise<void>;
+  /** Wake the orchestrator LLM with this signal's content (best-effort; per policy). */
+  onWake(event: MaestroEvent): void;
+  /** Refresh the footer / status line after a batch. */
+  onStatusChanged(): void;
+}
+
+export interface ProcessResult {
+  /** Events handled at render this run (cards for actions/commands; progress advances the render cursor). */
+  processed: MaestroEvent[];
+  /** Events that triggered an immediate orchestrator wake this run. */
+  woken: MaestroEvent[];
+  /** Action signals queued for next-turn injection (startup / non-interactive). */
+  queued: MaestroEvent[];
+}
+
+/** An action signal the orchestrator must be told about (routing matrix §5). */
+export function needsAttention(event: MaestroEvent): boolean {
+  return event.to === ORCHESTRATOR_ID && isSignalType(event.type) && event.type !== "progress";
+}
+
+export class SignalFeed {
+  private chain: Promise<unknown> = Promise.resolve();
+  private attached = false;
+  private runtime: MaestroRuntime | null = null;
+  private unsubs: (() => void)[] = [];
+
+  constructor(private readonly sink: FeedSink) {}
+
+  /**
+   * Subscribe to append notifications and, if a runtime already exists, run the
+   * startup pass (reconcile + process unconsumed entries) immediately.
+   */
+  attach(runtime: MaestroRuntime | null): void {
+    if (this.attached) return;
+    this.attached = true;
+    this.unsubs.push(onEventAppended((event) => void this.handleAppend(event)));
+    this.unsubs.push(onRuntimeReady((r) => void this.handleRuntimeReady(r)));
+    if (runtime) void this.handleRuntimeReady(runtime);
+  }
+
+  detach(): void {
+    for (const unsub of this.unsubs) unsub();
+    this.unsubs = [];
+    this.attached = false;
+    this.runtime = null;
+  }
+
+  /** Await any in-flight processing (test determinism; shutdown hygiene). */
+  async settled(): Promise<void> {
+    await this.chain;
+  }
+
+  /** Notification path: an event landed. Process the log past the cursors (wake allowed), then refresh the live footer/status line. */
+  private handleAppend(event: MaestroEvent): void {
+    const runtime = this.runtime ?? getRuntime();
+    if (!runtime) return;
+    this.chain = this.chain.then(async () => {
+      const result = await this.processPending(runtime, { wake: true });
+      // Footer is live state (registry statuses, phase, tickets) — refresh it
+      // after every batch that actually moved something (spawn commands,
+      // signals, stops). Without this the status line freezes at session start.
+      if (result.processed.length > 0 || result.woken.length > 0 || result.queued.length > 0) {
+        await this.safe(() => this.sink.onStatusChanged());
+      }
+    });
+  }
+
+  /** Runtime came up (session_start discovery or lazy auto-init): reconcile + replay unconsumed. */
+  private handleRuntimeReady(runtime: MaestroRuntime): void {
+    this.runtime = runtime;
+    this.chain = this.chain.then(async () => {
+      await this.startup(runtime);
+    });
+  }
+
+  /**
+   * Startup pass (§11 reconcile-on-startup):
+   * 1. mark agents whose process isn't alive as `interrupted`;
+   * 2. surface signals past the watermark as cards; action signals queue for
+   *    next-turn injection (no auto-wake at startup — avoids racing pi's own
+   *    startup; the orchestrator learns on its next turn).
+   */
+  async startup(runtime: MaestroRuntime): Promise<{ interrupted: RegistryAgent[]; processed: ProcessResult }> {
+    const interrupted = await this.reconcile(runtime);
+    const processed = await this.processPending(runtime, { wake: false });
+    await this.safe(() => this.sink.onStatusChanged());
+    return { interrupted, processed };
+  }
+
+  /**
+   * Walk agents.json; non-terminal statuses that imply a live embedded
+   * session in the previous process → `interrupted` (embedded children die
+   * with the orchestrator, §11). A `running` specialist had in-flight work; a
+   * `blocked` one was mid-task waiting for an answer — neither has a live
+   * session anymore, so both must be re-attached. Terminal states (`done` /
+   * `stopped`) stay as the orchestrator left them.
+   */
+  async reconcile(runtime: MaestroRuntime): Promise<RegistryAgent[]> {
+    const interrupted: RegistryAgent[] = [];
+    for (const agent of runtime.registry.listAgents()) {
+      if (agent.status === "running" || agent.status === "blocked") {
+        runtime.registry.setStatus(agent.id, "interrupted");
+        interrupted.push(agent);
+      }
+    }
+    if (interrupted.length > 0) await runtime.registry.persist(runtime.store);
+    return interrupted;
+  }
+
+  /**
+   * Read `events.jsonl` in sequence order past both cursors and process:
+   * render a card (advance ui cursor) for entries past the render position;
+   * consume (advance watermark) informational entries at render and action
+   * signals at wake / attention-queue. Serialized: every call runs after the
+   * previous one, and each call re-reads the log, so rapid appends can't race
+   * and no sequence number is ever processed twice.
+   */
+  async processPending(runtime: MaestroRuntime, opts: { wake?: boolean } = {}): Promise<ProcessResult> {
+    const wake = opts.wake ?? true;
+    const { consumers, log, store } = runtime;
+    const from = Math.min(consumers.getCursor(UI_CONSUMER_ID), consumers.getCursor(ORCHESTRATOR_ID)) + 1;
+    const events = await log.read(from);
+    const result: ProcessResult = { processed: [], woken: [], queued: [] };
+
+    for (const event of events) {
+      let changed = false;
+
+      // Render (only entries past the render position — exactly once).
+      // Cursors are re-read per event so concurrent cursor movement (e.g. the
+      // before_agent_start drain) can't make this loop double-handle an entry.
+      if (event.sequence > consumers.getCursor(UI_CONSUMER_ID)) {
+        if (event.type === "progress") {
+          // Progress is live status (footer), not a card (§4): advance the
+          // render cursor so the re-scan never re-delivers it, but never
+          // append it to the session. Action signals + commands render cards.
+          consumers.setCursor(UI_CONSUMER_ID, event.sequence);
+          result.processed.push(event);
+          changed = true;
+        } else {
+          const cardOk = await this.safe(() => this.sink.onCard(event));
+          if (cardOk.ok) {
+            consumers.setCursor(UI_CONSUMER_ID, event.sequence);
+            result.processed.push(event);
+            changed = true;
+          }
+        }
+      }
+
+      // Consume (only entries past the watermark).
+      if (event.sequence > consumers.getCursor(ORCHESTRATOR_ID)) {
+        if (needsAttention(event)) {
+          if (runtime.consumedSignals.has(event.eventId)) {
+            // Rendered-and-handled earlier this session (queued or woken);
+            // the re-scan of the (watermark, render-cursor] tail must not
+            // wake it twice. A fresh runtime (restart) has an empty set and
+            // re-queues it from the log below.
+            continue;
+          }
+          if (wake && this.sink.canWake()) {
+            const delivered = await this.safe(() => this.sink.onWake(event));
+            if (delivered.ok) {
+              runtime.consumedSignals.add(event.eventId);
+              await this.safe(() => applySignalStatus(runtime, event));
+              consumers.setCursor(ORCHESTRATOR_ID, event.sequence);
+              result.woken.push(event);
+              changed = true;
+            } else {
+              this.queueAttention(runtime, event);
+              result.queued.push(event);
+            }
+          } else {
+            this.queueAttention(runtime, event);
+            result.queued.push(event);
+          }
+        } else {
+          // progress / commands / history: fully handled at render.
+          consumers.setCursor(ORCHESTRATOR_ID, event.sequence);
+          changed = true;
+        }
+      }
+
+      if (changed) await this.safe(() => consumers.persist(store));
+    }
+
+    return result;
+  }
+
+  private queueAttention(runtime: MaestroRuntime, event: MaestroEvent): void {
+    runtime.consumedSignals.add(event.eventId);
+    void applySignalStatus(runtime, event);
+    if (!runtime.attention.some((a) => a.eventId === event.eventId)) {
+      runtime.attention.push(event);
+    }
+  }
+
+  private async safe<T>(fn: () => T | Promise<T>): Promise<{ ok: true; value: T } | { ok: false }> {
+    try {
+      return { ok: true, value: await fn() };
+    } catch {
+      return { ok: false };
+    }
+  }
+}
