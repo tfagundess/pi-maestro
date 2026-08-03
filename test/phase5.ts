@@ -1,13 +1,16 @@
 /**
- * Phase 5 test harness — unit checks for field notes (§8, §9, §11):
- * stub lifecycle at spawn, injection into the spawn prompt, injection at
- * resume (from the actual file), the orchestrator's tail-limited read tool
- * (maestro_read_field_notes), and the task-store-root fix (children must know
- * where artifacts/field-notes live relative to the store root).
+ * Field-notes unit regression suite for pi Maestro.
  *
- * Temporary; registered as `/test-phase5` ONLY while imported by index.ts.
- * Removed after verification. Writes <cwd>/test-results.json. Isolated stores
- * under <cwd>/phase5-unit/; no real LLM, no real child.
+ * Covers field-note creation and idempotency, preservation of child-written
+ * notes, spawn/resume prompt injection, the tail-limited
+ * `maestro_read_field_notes` tool, and task-store-root path resolution. It
+ * uses isolated stores and fake child sessions without a real LLM.
+ *
+ * Development-only test harness. It is not loaded by the production extension
+ * entrypoint. Run `/test-phase5` through a temporary test loader.
+ *
+ * Writes <cwd>/test-results.json and uses an isolated store under
+ * <cwd>/phase5-unit/.
  */
 import type { ExtensionAPI, AgentSession, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";

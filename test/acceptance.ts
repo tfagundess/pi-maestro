@@ -1,35 +1,18 @@
 /**
- * Cross-cutting end-to-end acceptance walkthrough (Phase 6, §12 pattern).
- * TEMP: registered ONLY while imported by index.ts — remove after verification.
+ * Full end-to-end acceptance suite for pi Maestro.
  *
- * Three commands, run as real `pi -p` sessions:
+ * Runs as real `pi -p` sessions and combines static checks, deterministic
+ * failure/escalation scenarios, a real multi-child happy path, and a
+ * SIGKILL/restart durability scenario. It validates the complete user-facing
+ * workflow: roles, tickets, specialist signals, replies, artifacts, reviews,
+ * field notes, transcript continuity, watermarks, and log replay.
  *
- *   /accept-1      (fresh scratch dir)
- *     — static checks: design-doc cross-check (§6 tools, §5 envelope,
- *       status enum, §3 layout), terminology, no stale terms, log-audit
- *       replay logic.
- *     — deterministic in-process scenarios (scripted children via the
- *       child-session factory seam): failure path (unknown model → clean
- *       error; scripted child emits `error` → log + registry idle, no
- *       crash) and escalation isolation (requires:"human" → orchestrator
- *       queue/injection only, never a child→human channel).
- *     — REAL happy path (real LLM children): init → state.md goal + open
- *       ticket T-1 → maestro_define_role (custom "auditor") → spawn impl-1
- *       → progress → needs_input(requires:orchestrator) → maestro_reply →
- *       finished + artifact → reviewer-1 → finished → T-1 done → log audit.
+ * Development-only test harness. It is not loaded by the production extension
+ * entrypoint. The three commands are intended to run in scratch directories:
+ * `/accept-1`, `/accept-duar`, then `/accept-2` after the durability driver
+ * restarts pi.
  *
- *   /accept-duar    (fresh scratch dir)
- *     — durability setup: spawn a real child that parks on needs_input;
- *       write duar-ready.txt (with the exact persisted watermark), then hold
- *       the process open so the driver can SIGKILL pi mid-run.
- *
- *   /accept-2       (same dir, after SIGKILL)
- *     — reconcile marks the stale agent interrupted; watermark resumes
- *       exactly (no duplicate/lost events); autoResume=false → surfaced not
- *       auto-resumed; maestro_resume → fresh transcript continuity + new
- *       sequence; field notes intact; log audit replay from 0.
- *
- * Results: <cwd>/accept-1-results.json / accept-2-results.json
+ * Writes <cwd>/accept-1-results.json and <cwd>/accept-2-results.json.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFile, writeFile, readdir, mkdir } from "node:fs/promises";

@@ -1,16 +1,16 @@
 /**
- * Phase 2 test harness — signal routing. Temporary; registered as
- * `/test-phase2` (unit) + `/test-phase2-live` (real wiring) +
- * `/test-phase2-restart` (durability) ONLY while this file is listed in
- * settings.json "extensions". Removed after verification.
+ * Signal-routing and feed regression suite for pi Maestro.
  *
- * Run (fresh scratch dir per phase):
- *   unit:    pi -p "/test-phase2"            (isolated stores under <cwd>/phase2-unit/)
- *   live:    rm -rf <dir> && pi -p "/test-phase2-live"     (real feed + real child)
- *   restart: pi -p "/test-phase2-restart"    (same dir as live, WITHOUT cleaning)
+ * Covers the unit path plus real wiring and restart behavior: progress cards,
+ * attention queues, watermark advancement, footer/status rendering, session
+ * entries, and exactly-once replay of unconsumed signals.
  *
- * Writes results to <cwd>/test-results.json (unit) / live-results.json /
- * restart-results.json.
+ * Development-only test harness. It is not loaded by the production extension
+ * entrypoint. Run the commands in a fresh scratch directory in this order:
+ * `/test-phase2`, `/test-phase2-live`, and `/test-phase2-restart`.
+ *
+ * Writes <cwd>/test-results.json, <cwd>/live-results.json, and
+ * <cwd>/restart-results.json.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";

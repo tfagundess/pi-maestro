@@ -1,12 +1,15 @@
 /**
- * Phase 4 test harness — unit checks for personas & policies (orchestrator
- * persona arming, config.json policy loading + autoResume, skill content,
- * custom-role flow, ownership accumulation).
+ * Persona and policy unit regression suite for pi Maestro.
  *
- * Temporary; registered as `/test-phase4` ONLY while imported by index.ts.
- * Removed from index.ts after verification. Writes results to
- * <cwd>/test-results.json. Isolated stores under <cwd>/phase4-unit/; no real
- * LLM, no real child — fake child sessions capture resume delivery.
+ * Covers persona arming, configuration defaults and overrides, `autoResume`,
+ * skill content, custom roles, ownership accumulation, and fake-child resume
+ * delivery. It uses isolated stores and no real LLM or provider.
+ *
+ * Development-only test harness. It is not loaded by the production extension
+ * entrypoint. Run `/test-phase4` through a temporary test loader.
+ *
+ * Writes <cwd>/test-results.json and uses an isolated store under
+ * <cwd>/phase4-unit/.
  */
 import type { ExtensionAPI, AgentSession, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";

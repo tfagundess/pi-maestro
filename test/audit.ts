@@ -1,29 +1,18 @@
 /**
- * Full-codebase audit harness — end-to-end scenario simulation (§12 pattern,
- * temporary; registered ONLY while imported by index.ts).
+ * Deterministic integration regression suite for pi Maestro.
  *
- * Drives the REAL extension surface (buildOrchestratorTools + SignalFeed +
- * control + store + registry + consumers + ui injection) with SCRIPTED child
- * sessions (the child-session factory seam, see child-session.ts), so the
- * whole extension is exercised deterministically through realistic
- * orchestration scenarios — no real LLM runs:
+ * Exercises the real extension surfaces — orchestrator tools, signal feed,
+ * control flow, task store, registry, consumers, and UI injection — with
+ * scripted child sessions instead of real LLM calls. It covers initialization,
+ * orchestration, concurrency and scope guards, roles, stop/resume, restart
+ * durability, escalation, field notes, and prompt frontmatter regressions.
  *
- *   S1  init layout            — maestro_init → the 7 store artifacts seeded
- *   S2  full orchestration loop — define_role → spawn → await(needs_input) →
- *                                reply → finished+artifact → reviewer flow →
- *                                history/ticket filter → field notes
- *   S3  sequential guard       — spawn while a child is working → rejected
- *   S4  scope ownership        — overlapping scope → rejected
- *   S5  unknown role           — rejected with built-in list
- *   S6  stop → ignored signals → resume (transcript continuity)
- *   S7  restart durability     — reconcile running→interrupted, autoResume,
- *                                contiguous sequences, watermark preserved
- *   S8  escalation             — requires:human queued + drained into the
- *                                orchestrator's next-turn injection
- *   S9  field-notes tool       — tails, unknown agent, byte-cap
- *   S10 frontmatter regression — no blueprint frontmatter leaks into child prompts
+ * Development-only test harness. It is not loaded by the production extension
+ * entrypoint. Run it through a temporary test loader when a broad, fast
+ * integration check is needed.
  *
- * Writes <cwd>/audit-e2e-results.json. Isolated stores under <cwd>/audit-e2e/.
+ * Writes <cwd>/audit-e2e-results.json and uses isolated stores under
+ * <cwd>/audit-e2e/.
  */
 import type { ExtensionAPI, AgentSession, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";

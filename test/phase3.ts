@@ -1,14 +1,16 @@
 /**
- * Phase 3 test harness — unit checks for answering & control (reply / send /
- * forward / stop / resume / await, ticket cancellation, command wiring).
+ * Control-plane unit regression suite for pi Maestro.
  *
- * Temporary; registered as `/test-phase3` ONLY while imported by index.ts
- * (the live-wiring graph must be shared — the await subscription and the
- * feed share the same `onEventAppended` set). Removed from index.ts after
- * verification. Writes results to <cwd>/test-results.json.
+ * Exercises replies, direct sends, forwarding, stop/resume, await behavior,
+ * ticket cancellation, command wiring, and fake-child lifecycle delivery.
+ * It uses isolated stores and fake child sessions, so it is deterministic and
+ * does not require a real LLM or provider.
  *
- * Isolated stores under <cwd>/phase3-unit/; no real LLM, no real child —
- * fake child sessions capture delivery (prompt vs steer) and lifecycle.
+ * Development-only test harness. It is not loaded by the production extension
+ * entrypoint. Run `/test-phase3` through a temporary test loader.
+ *
+ * Writes <cwd>/test-results.json and uses an isolated store under
+ * <cwd>/phase3-unit/.
  */
 import type { ExtensionAPI, AgentSession, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
