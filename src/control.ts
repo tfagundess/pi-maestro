@@ -262,8 +262,8 @@ export interface AutoResumeOptions {
 }
 
 /**
- * Policy `autoResume` (§8): when config.autoResume is true, startup
- * re-attaches interrupted specialists automatically — fresh embedded sessions
+ * Policy `autoResume` (§8): when config.autoResume is true, explicit Maestro
+ * activation re-attaches interrupted specialists automatically — fresh embedded sessions
  * from their transcripts, no asking. When false (default) it is a no-op and
  * the orchestrator decides on its next turn (the pending injection surfaces
  * them). Best-effort per agent: a failure leaves the agent `interrupted` for

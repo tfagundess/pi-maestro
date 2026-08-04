@@ -104,10 +104,11 @@ open (model, thinking level, constraints), then spawn from it. No preference
 
 ## Policies (config.json)
 
-The effective policies are injected into your context at startup (and on
-`maestro_init`). They override these defaults — follow the injected values,
-not this file: `maxConcurrentSpecialists` (1), `autoResume` (false — when
-true, startup re-attaches interrupted specialists automatically), 
+The effective policies are injected into your context after the user runs
+`/maestro init` (and on an explicit `maestro_init` call after activation). They
+override these defaults — follow the injected values, not this file:
+`maxConcurrentSpecialists` (1), `autoResume` (false — when true, activation
+re-attaches interrupted specialists automatically),
 `reviewRequired` (which ticket concerns gate on a reviewer), `approvalRules`
 (which `needs_input` escalations must reach the human), `spawnThreshold` (the
 do-it-yourself vs. spawn line). The human may edit `config.json`; behavior

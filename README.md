@@ -1,6 +1,6 @@
 # pi Maestro — Orchestrator Extension
 
-**Version 1.0**
+**Version 1.0.1**
 
 Maestro turns pi into a small team of AI agents.
 
@@ -127,7 +127,7 @@ The orchestrator LLM has these tools (you can mention them in your prompts):
 | `maestro_stop` / `maestro_resume` | Pause and restart a specialist |
 | `maestro_status` | What's happening right now |
 | `maestro_history` / `maestro_read_transcript` / `maestro_read_field_notes` / `maestro_read_artifact` | Audit anything: event log, transcripts, notes, artifacts |
-| `maestro_init` | Create/resume the task store |
+| `maestro_init` | Create/resume the task store after Maestro has been activated with `/maestro init` |
 
 ### What a specialist can do
 
@@ -152,10 +152,11 @@ task state first.
 
 ### After a crash
 
-Kill pi mid-task, restart in the same directory, and continue. Specialists
-are marked `interrupted`, their pending questions come back, and
-`maestro_resume` picks them up exactly where they stopped — no lost or
-duplicated work.
+Kill pi mid-task, restart in the same directory, then run `/maestro init` to
+resume the task. Specialists are marked `interrupted`, their pending questions
+come back, and `maestro_resume` picks them up exactly where they stopped — no
+lost or duplicated work. Maestro stays dormant on restart until you run that
+command.
 
 ### Names and roles
 

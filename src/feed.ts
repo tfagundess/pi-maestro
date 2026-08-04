@@ -106,7 +106,7 @@ export class SignalFeed {
     });
   }
 
-  /** Runtime came up (session_start discovery or lazy auto-init): reconcile + replay unconsumed. */
+  /** Runtime came up after explicit activation: reconcile + replay unconsumed. */
   private handleRuntimeReady(runtime: MaestroRuntime): void {
     this.runtime = runtime;
     this.chain = this.chain.then(async () => {

@@ -4,21 +4,21 @@
  * Hub-and-spoke agent orchestration for pi (design: pi-maestro-extension.md).
  * One extension factory, two roles (§14 role detection):
  *
- * - Orchestrator session (no MAESTRO_AGENT_ID): the full maestro toolset +
- *   commands + the signal feed (cards / footer / wake / reconcile) +
- *   startup/discovery + skill contribution.
+ * - Orchestrator session (no MAESTRO_AGENT_ID): a dormant `/maestro` command
+ *   at startup. The tools, persona, runtime, and signal feed activate only
+ *   after the user explicitly runs `/maestro init`.
  * - Child session (MAESTRO_AGENT_ID set, RPC transport — §13 extension):
  *   registers ONLY maestro_signal. Embedded children (the current transport)
  *   are built directly by the orchestrator via `customTools`, so this branch
  *   is the RPC path.
  *
- * No background resources at factory time (§14); the feed + footer live in
- * `session_start`, cleanup in `session_shutdown`.
+ * No background resources at factory time (§14); the command is registered at
+ * load time so it can provide the explicit activation boundary. Runtime/feed
+ * resources are created by `/maestro init` and cleaned up in `session_shutdown`.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { TaskStore } from "./src/task-store.ts";
-import { buildRuntime, clearRuntime, getRuntime, setRuntime, teardownRuntime } from "./src/runtime.ts";
-import { MAESTRO_CHILD_SKILL_DIR, MAESTRO_SKILL_DIR } from "./src/child-session.ts";
+import { buildRuntime, clearRuntime, getRuntime, notifyRuntimeReady, setRuntime, teardownRuntime } from "./src/runtime.ts";
 import {
   makeMaestroSignalTool,
   registerMaestroCommands,
@@ -48,6 +48,9 @@ export default function (pi: ExtensionAPI): void {
 
   let feed: SignalFeed | null = null;
   let activeCtx: ExtensionContext | null = null;
+  let activated = false;
+  let cardsRegistered = false;
+  let toolsRegistered = false;
   // Persona arming (§14): pi skills are progressive disclosure — the model may
   // not load the maestro skill on its own, so the core rules + effective
   // policies are injected into orchestrator context via before_agent_start,
@@ -83,61 +86,36 @@ export default function (pi: ExtensionAPI): void {
   };
 
   pi.on("session_start", async (_event, ctx) => {
-    activeCtx = ctx;
+    // Existing task stores are data, not activation state. A new Pi session
+    // stays dormant until the user explicitly runs `/maestro init`.
+    activated = false;
     personaArmed = false;
-
-    // Discover an existing task store so a restarted orchestrator resumes from
-    // its watermark; reconcile (mark interrupted + re-surface unconsumed
-    // signals) runs in the feed's startup pass (§11).
-    const store = await TaskStore.discover(ctx.cwd);
-    let runtime = null;
-    if (store) {
-      runtime = await buildRuntime(store);
-      setRuntime(runtime);
-    }
-
-    feed = new SignalFeed(sink);
-    feed.attach(runtime);
-
-    if (runtime) {
-      // Startup pass completes (reconcile + surface unconsumed signals) before
-      // the policy runs, so `interrupted` reflects this process's reality.
-      await feed.settled();
-      // Policy §8 `autoResume`: re-attach interrupted specialists automatically
-      // (no-op when the policy is false — they stay interrupted and the
-      // orchestrator decides on its next turn via the pending injection).
-      const resumed = await autoResumeInterrupted(runtime, {
-        cwd: ctx.cwd,
-        thinkingLevel: ctx.thinkingLevel,
-        resolveModel: (a) => resolveRegistryModel(ctx, a.model),
-        signalToolFor: (agentId) => makeMaestroSignalTool(agentId),
-      });
-      if (resumed.length > 0) {
-        ctx.ui.notify(`[maestro] auto-resumed ${resumed.length} specialist(s): ${resumed.join(", ")}`, "info");
-      }
-    }
-    await refreshFooter(ctx, runtime);
+    activeCtx = null;
+    feed = null;
+    clearRuntime();
+    await refreshFooter(ctx, null);
   });
 
   pi.on("session_shutdown", async () => {
     feed?.detach();
     feed = null;
     activeCtx = null;
+    activated = false;
     await teardownRuntime();
     clearRuntime();
   });
 
-  // Contribute both skills (maestro = orchestrator persona, maestro-child =
-  // specialist protocol) to resource discovery (§14).
-  pi.on("resources_discover", async () => ({
-    skillPaths: [MAESTRO_SKILL_DIR, MAESTRO_CHILD_SKILL_DIR],
-  }));
+  // The child protocol is loaded directly by child-session.ts. Do not expose
+  // the orchestrator skill during startup: `/maestro init` is the sole user
+  // activation boundary, and the active orchestrator persona is injected
+  // directly by before_agent_start after that command.
 
   // Context injection (§14 before_agent_start): the orchestrator persona +
   // effective policies (once per process — the model may not load the skill on
   // its own) plus unconsumed action signals + interrupted specialists
-  // (startup / non-interactive fallback of the wake policy).
+  // (activation / non-interactive fallback of the wake policy).
   pi.on("before_agent_start", async (_event, _ctx) => {
+    if (!activated) return;
     const runtime = getRuntime();
     if (!runtime) return;
     const injected = await buildOrchestratorContext(runtime, personaArmed);
@@ -148,7 +126,64 @@ export default function (pi: ExtensionAPI): void {
     };
   });
 
-  registerMaestroCards(pi);
-  registerMaestroTools(pi);
-  registerMaestroCommands(pi);
+  const activate = async (ctx: ExtensionContext, taskName?: string): Promise<string> => {
+    if (activated) {
+      const runtime = getRuntime();
+      if (!runtime) throw new Error("Maestro activation state is inconsistent; restart Pi and try again.");
+      return runtime.store.taskId;
+    }
+
+    // This is the only orchestrator-side call to TaskStore.init().
+    const store = await TaskStore.init(ctx.cwd, taskName);
+    activeCtx = ctx;
+    activated = true;
+    personaArmed = false;
+
+    if (!cardsRegistered) {
+      registerMaestroCards(pi);
+      cardsRegistered = true;
+    }
+    if (!toolsRegistered) {
+      registerMaestroTools(pi);
+      toolsRegistered = true;
+    }
+
+    // Attach before the explicit runtime-ready notification so it runs the
+    // activation reconciliation/replay pass through the session-scoped feed.
+    feed = new SignalFeed(sink);
+    feed.attach(null);
+    try {
+      // The store was created/resumed explicitly above. Build and publish the
+      // runtime only after that activation boundary has succeeded.
+      const runtime = await buildRuntime(store);
+      setRuntime(runtime);
+      notifyRuntimeReady(runtime);
+      await feed.settled();
+
+      const resumed = await autoResumeInterrupted(runtime, {
+        cwd: ctx.cwd,
+        thinkingLevel: ctx.thinkingLevel,
+        resolveModel: (a) => resolveRegistryModel(ctx, a.model),
+        signalToolFor: (agentId) => makeMaestroSignalTool(agentId),
+      });
+      if (resumed.length > 0) {
+        ctx.ui.notify(`[maestro] auto-resumed ${resumed.length} specialist(s): ${resumed.join(", ")}`, "info");
+      }
+      await refreshFooter(ctx, runtime);
+      return store.taskId;
+    } catch (error) {
+      feed.detach();
+      feed = null;
+      activeCtx = null;
+      activated = false;
+      await teardownRuntime();
+      clearRuntime();
+      throw error;
+    }
+  };
+
+  registerMaestroCommands(pi, {
+    activate,
+    isActive: () => activated,
+  });
 }

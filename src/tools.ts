@@ -139,9 +139,10 @@ export function buildOrchestratorTools(): ToolDefinition[] {
       task: Type.Optional(Type.String({ description: "Optional task name used for the store id" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const previous = await TaskStore.discover(ctx.cwd);
       const store = await TaskStore.init(ctx.cwd, params.task ?? undefined);
       const runtime = await ensureRuntime(ctx.cwd);
-      const existed = runtime.store.taskId === store.taskId;
+      const existed = previous?.taskId === store.taskId;
       const config = await store.loadConfig();
       return {
         content: [
@@ -848,7 +849,14 @@ export function makeMaestroSignalTool(agentId: string): ToolDefinition {
 
 // ── commands ───────────────────────────────────────────────────────────────
 
-export function registerMaestroCommands(pi: ExtensionAPI): void {
+export interface MaestroCommandHooks {
+  /** Explicitly create/resume and activate the current orchestrator runtime. */
+  activate: (ctx: ExtensionContext, taskName?: string) => Promise<string>;
+  /** Whether `/maestro init` has activated Maestro in this Pi session. */
+  isActive: () => boolean;
+}
+
+export function registerMaestroCommands(pi: ExtensionAPI, hooks: MaestroCommandHooks): void {
   // One command name (pi parses `/maestro init` as name "maestro", args "init").
   pi.registerCommand("maestro", {
     description: "Maestro control: init | status | stop <agentId>",
@@ -856,13 +864,20 @@ export function registerMaestroCommands(pi: ExtensionAPI): void {
       const [sub, ...rest] = (args ?? "").trim().split(/\s+/);
       switch (sub) {
         case "init": {
-          const store = await TaskStore.init(ctx.cwd, rest.join(" ") || undefined);
-          await ensureRuntime(ctx.cwd);
-          ctx.ui.notify(`Maestro task store ready: ${store.taskId}`, "info");
+          const taskId = await hooks.activate(ctx, rest.join(" ") || undefined);
+          ctx.ui.notify(`Maestro task store ready: ${taskId}`, "info");
           break;
         }
         case "status": {
-          const runtime = await ensureRuntime(ctx.cwd);
+          if (!hooks.isActive()) {
+            ctx.ui.notify("Maestro is inactive. Run /maestro init first.", "warning");
+            break;
+          }
+          const runtime = getRuntime();
+          if (!runtime) {
+            ctx.ui.notify("Maestro is inactive. Run /maestro init first.", "warning");
+            break;
+          }
           const st = await renderStatus(runtime);
           ctx.ui.notify(st.text, "info");
           break;
@@ -873,7 +888,15 @@ export function registerMaestroCommands(pi: ExtensionAPI): void {
             ctx.ui.notify("Usage: /maestro stop <agentId>", "warning");
             break;
           }
-          const runtime = await ensureRuntime(ctx.cwd);
+          if (!hooks.isActive()) {
+            ctx.ui.notify("Maestro is inactive. Run /maestro init first.", "warning");
+            break;
+          }
+          const runtime = getRuntime();
+          if (!runtime) {
+            ctx.ui.notify("Maestro is inactive. Run /maestro init first.", "warning");
+            break;
+          }
           const result = await stopAgent(runtime, agentId);
           ctx.ui.notify(
             `${agentId}: ${result.status}${result.event ? ` (${result.event.eventId}, seq ${result.event.sequence})` : " (already stopped)"}`,

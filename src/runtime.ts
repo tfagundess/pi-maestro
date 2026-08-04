@@ -1,7 +1,8 @@
 /**
- * Module-level runtime state for the orchestrator session. Rebuilt on
- * `session_start` (discovery) or lazily on first tool use (auto-init §6/§10).
- * All maestro tools and commands go through here.
+ * Module-level runtime state for the orchestrator session. Built only after
+ * the user explicitly runs `/maestro init`; child/RPC paths may load an
+ * existing store but never create one implicitly. All Maestro tools and
+ * commands go through here.
  */
 import type { TaskStore } from "./task-store.ts";
 import type { EventLog } from "./events.ts";
@@ -38,8 +39,9 @@ export interface MaestroRuntime {
 let current: MaestroRuntime | null = null;
 
 // ── runtime-ready notification ─────────────────────────────────────────────
-// Lets session-scoped wiring (the feed) attach even when the runtime is built
-// lazily by a tool (auto-init §6/§10) rather than at session_start discovery.
+// Lets session-scoped wiring (the feed) attach when an explicitly activated
+// runtime is loaded after startup, while keeping the extension dormant before
+// `/maestro init`.
 const runtimeReadyListeners = new Set<(runtime: MaestroRuntime) => void>();
 
 export function onRuntimeReady(fn: (runtime: MaestroRuntime) => void): () => void {
@@ -101,11 +103,20 @@ export async function buildRuntime(store: TaskStore): Promise<MaestroRuntime> {
   };
 }
 
-/** Lazily ensure a runtime exists for this cwd (auto-init on first use). */
+/**
+ * Load an existing runtime when one is already active or when an explicitly
+ * activated child/RPC path needs to recover the current store.
+ *
+ * This function deliberately never calls `TaskStore.init()`. Creating a task
+ * store is an activation boundary and is owned exclusively by `/maestro init`.
+ */
 export async function ensureRuntime(cwd: string): Promise<MaestroRuntime> {
   if (current) return current;
   const { TaskStore } = await import("./task-store.ts");
-  const store = (await TaskStore.discover(cwd)) ?? (await TaskStore.init(cwd));
+  const store = await TaskStore.discover(cwd);
+  if (!store) {
+    throw new Error("Maestro is inactive. Run /maestro init first.");
+  }
   const runtime = await buildRuntime(store);
   setRuntime(runtime);
   notifyRuntimeReady(runtime);
