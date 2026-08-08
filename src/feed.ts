@@ -46,12 +46,8 @@ export interface FeedSink {
 }
 
 export interface ProcessResult {
-  /** Events handled at render this run (cards for actions/commands; progress advances the render cursor). */
-  processed: MaestroEvent[];
-  /** Events that triggered an immediate orchestrator wake this run. */
-  woken: MaestroEvent[];
-  /** Action signals queued for next-turn injection (startup / non-interactive). */
-  queued: MaestroEvent[];
+  /** Whether this run rendered, woke, or queued anything. */
+  changed: boolean;
 }
 
 /** An action signal the orchestrator must be told about (routing matrix §5). */
@@ -74,7 +70,7 @@ export class SignalFeed {
   attach(runtime: MaestroRuntime | null): void {
     if (this.attached) return;
     this.attached = true;
-    this.unsubs.push(onEventAppended((event) => void this.handleAppend(event)));
+    this.unsubs.push(onEventAppended(() => void this.handleAppend()));
     this.unsubs.push(onRuntimeReady((r) => void this.handleRuntimeReady(r)));
     if (runtime) void this.handleRuntimeReady(runtime);
   }
@@ -92,7 +88,7 @@ export class SignalFeed {
   }
 
   /** Notification path: an event landed. Process the log past the cursors (wake allowed), then refresh the live footer/status line. */
-  private handleAppend(event: MaestroEvent): void {
+  private handleAppend(): void {
     const runtime = this.runtime ?? getRuntime();
     if (!runtime) return;
     this.chain = this.chain.then(async () => {
@@ -100,7 +96,7 @@ export class SignalFeed {
       // Footer is live state (registry statuses, phase, tickets) — refresh it
       // after every batch that actually moved something (spawn commands,
       // signals, stops). Without this the status line freezes at session start.
-      if (result.processed.length > 0 || result.woken.length > 0 || result.queued.length > 0) {
+      if (result.changed) {
         await this.safe(() => this.sink.onStatusChanged());
       }
     });
@@ -121,11 +117,10 @@ export class SignalFeed {
    *    next-turn injection (no auto-wake at startup — avoids racing pi's own
    *    startup; the orchestrator learns on its next turn).
    */
-  async startup(runtime: MaestroRuntime): Promise<{ interrupted: RegistryAgent[]; processed: ProcessResult }> {
-    const interrupted = await this.reconcile(runtime);
-    const processed = await this.processPending(runtime, { wake: false });
+  private async startup(runtime: MaestroRuntime): Promise<void> {
+    await this.reconcile(runtime);
+    await this.processPending(runtime, { wake: false });
     await this.safe(() => this.sink.onStatusChanged());
-    return { interrupted, processed };
   }
 
   /**
@@ -161,7 +156,7 @@ export class SignalFeed {
     const { consumers, log, store } = runtime;
     const from = Math.min(consumers.getCursor(UI_CONSUMER_ID), consumers.getCursor(ORCHESTRATOR_ID)) + 1;
     const events = await log.read(from);
-    const result: ProcessResult = { processed: [], woken: [], queued: [] };
+    const result: ProcessResult = { changed: false };
 
     for (const event of events) {
       let changed = false;
@@ -175,13 +170,11 @@ export class SignalFeed {
           // render cursor so the re-scan never re-delivers it, but never
           // append it to the session. Action signals + commands render cards.
           consumers.setCursor(UI_CONSUMER_ID, event.sequence);
-          result.processed.push(event);
           changed = true;
         } else {
           const cardOk = await this.safe(() => this.sink.onCard(event));
           if (cardOk.ok) {
             consumers.setCursor(UI_CONSUMER_ID, event.sequence);
-            result.processed.push(event);
             changed = true;
           }
         }
@@ -203,15 +196,14 @@ export class SignalFeed {
               runtime.consumedSignals.add(event.eventId);
               await this.safe(() => applySignalStatus(runtime, event));
               consumers.setCursor(ORCHESTRATOR_ID, event.sequence);
-              result.woken.push(event);
               changed = true;
             } else {
               this.queueAttention(runtime, event);
-              result.queued.push(event);
+              changed = true;
             }
           } else {
             this.queueAttention(runtime, event);
-            result.queued.push(event);
+            changed = true;
           }
         } else {
           // progress / commands / history: fully handled at render.
@@ -220,7 +212,10 @@ export class SignalFeed {
         }
       }
 
-      if (changed) await this.safe(() => consumers.persist(store));
+      if (changed) {
+        result.changed = true;
+        await this.safe(() => consumers.persist(store));
+      }
     }
 
     return result;

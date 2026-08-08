@@ -187,8 +187,6 @@ export interface ResumeOptions {
   thinkingLevel?: ThinkingLevel;
   cwd: string;
   signalTool: ToolDefinition;
-  /** Test seam: the child-session factory (defaults to createChildSession). */
-  createSession?: typeof createChildSession;
 }
 
 /**
@@ -225,8 +223,7 @@ export async function resumeAgent(
     fieldNotes,
   });
 
-  const createSession = opts.createSession ?? createChildSession;
-  const handle = await createSession({
+  const handle = await createChildSession({
     store: runtime.store,
     agentId,
     role: agent.role,
@@ -238,7 +235,6 @@ export async function resumeAgent(
     thinkingLevel: opts.thinkingLevel,
     cwd: opts.cwd,
     sessionFile: agent.sessionFile,
-    resumePrompt: prompt,
   });
   runtime.children.set(agentId, handle);
 
@@ -257,8 +253,6 @@ export interface AutoResumeOptions {
   resolveModel: (agent: RegistryAgent) => Model<any> | undefined;
   /** Per-agent signal tool (the child's only maestro tool carries its id). */
   signalToolFor: (agentId: string) => ToolDefinition;
-  /** Test seam: the child-session factory (defaults to createChildSession). */
-  createSession?: typeof createChildSession;
 }
 
 /**
@@ -283,7 +277,6 @@ export async function autoResumeInterrupted(
         thinkingLevel: opts.thinkingLevel,
         cwd: opts.cwd,
         signalTool: opts.signalToolFor(agent.id),
-        createSession: opts.createSession,
       });
       resumed.push(agent.id);
     } catch (err) {

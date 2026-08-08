@@ -44,8 +44,6 @@ export interface ChildSessionOptions {
   cwd: string;
   /** Resume: open an existing session file instead of creating a new one (Phase 3). */
   sessionFile?: string;
-  /** Resume: continuation prompt used instead of the spawn prompt (Phase 3). */
-  resumePrompt?: string;
 }
 
 export interface ChildSessionHandle {
@@ -165,26 +163,6 @@ export async function createChildSession(
       } catch { /* ignore */ }
     },
   };
-}
-
-// ── child-session factory seam ────────────────────────────────────────────
-// The spawn tool and resumeAgent create embedded sessions through this
-// factory. The default is the real createChildSession; scenario-simulation
-// harnesses swap in a scripted factory so the whole extension — tools + feed
-// + registry + log + store — can be exercised end-to-end deterministically
-// without real LLM runs. Never set outside tests.
-let activeFactory: typeof createChildSession = createChildSession;
-
-export function setChildSessionFactory(f: typeof createChildSession): void {
-  activeFactory = f;
-}
-
-export function getChildSessionFactory(): typeof createChildSession {
-  return activeFactory;
-}
-
-export function resetChildSessionFactory(): void {
-  activeFactory = createChildSession;
 }
 
 /**

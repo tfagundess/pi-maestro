@@ -26,10 +26,6 @@ export class Registry {
     }
   }
 
-  static async save(store: TaskStore, data: RegistryFile): Promise<void> {
-    await writeFile(store.registryPath, JSON.stringify(data, null, 2) + "\n", "utf8");
-  }
-
   listAgents(): RegistryAgent[] {
     return Object.values(this.data.agents);
   }
@@ -76,12 +72,7 @@ export class Registry {
     if (agent) agent.status = status;
   }
 
-  setLastSignalSequence(id: string, sequence: number): void {
-    const agent = this.data.agents[id];
-    if (agent && sequence > (agent.lastSignalSequence ?? 0)) agent.lastSignalSequence = sequence;
-  }
-
   async persist(store: TaskStore): Promise<void> {
-    await Registry.save(store, this.data);
+    await writeFile(store.registryPath, JSON.stringify(this.data, null, 2) + "\n", "utf8");
   }
 }

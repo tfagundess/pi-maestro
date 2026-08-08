@@ -71,10 +71,6 @@ export class EventLog {
     return new EventLog(store, next);
   }
 
-  get nextSequenceValue(): number {
-    return this.nextSequence;
-  }
-
   /**
    * Append an event. Serialized per log instance: every append is queued
    * behind the previous one, so sequence is strictly increasing and the file
@@ -126,9 +122,4 @@ export class EventLog {
     return events;
   }
 
-  /** Highest sequence currently persisted. */
-  async lastPersistedSequence(): Promise<number> {
-    const events = await this.read(0, 1);
-    return events.length > 0 ? events[events.length - 1]!.sequence : 0;
-  }
 }

@@ -1,7 +1,7 @@
 /**
  * pi Maestro — Orchestrator Extension
  *
- * Hub-and-spoke agent orchestration for pi (design: pi-maestro-extension.md).
+ * Hub-and-spoke agent orchestration for pi.
  * One extension factory, two roles (§14 role detection):
  *
  * - Orchestrator session (no MAESTRO_AGENT_ID): a dormant `/maestro` command

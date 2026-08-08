@@ -1,7 +1,6 @@
 /**
  * Shared types for the pi Maestro orchestrator extension.
- * Mirrors the envelope / registry / config schemas from the design doc
- * (pi-maestro-extension.md §3, §5).
+ * Defines the envelope, registry, and config schemas used by the extension.
  */
 
 /** Structured signals a specialist emits (event → orchestrator). */
@@ -68,7 +67,6 @@ export interface RegistryAgent {
   /** Always "orchestrator" in the current design (agent→agent is an extension, §13). */
   parent: string;
   spawnedAt: string;
-  lastSignalSequence?: number;
 }
 
 export interface RegistryFile {
@@ -117,33 +115,3 @@ export const ORCHESTRATOR_ID = "orchestrator";
  * has been told about. Two cursors, one monotonic feed.
  */
 export const UI_CONSUMER_ID = "orchestrator-ui";
-
-export interface SignalEvent extends MaestroEvent {
-  type: SignalType;
-  to: typeof ORCHESTRATOR_ID;
-}
-
-export interface CommandEvent extends MaestroEvent {
-  type: CommandType;
-  from: typeof ORCHESTRATOR_ID;
-}
-
-/** Compact ticket row used in state.md and tickets/<id>.md (schema §3). */
-export interface Ticket {
-  id: string;
-  title: string;
-  status:
-    | "planned"
-    | "assigned"
-    | "running"
-    | "waiting_input"
-    | "review"
-    | "done"
-    | "cancelled"
-    | "superseded";
-  owner?: string;
-  depends_on?: string[];
-  superseded_by?: string | null;
-  artifacts?: string[];
-  acceptance_criteria?: string;
-}

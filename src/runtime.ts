@@ -4,10 +4,10 @@
  * existing store but never create one implicitly. All Maestro tools and
  * commands go through here.
  */
-import type { TaskStore } from "./task-store.ts";
-import type { EventLog } from "./events.ts";
-import type { Registry } from "./registry.ts";
-import type { Consumers } from "./consumers.ts";
+import { TaskStore } from "./task-store.ts";
+import { EventLog } from "./events.ts";
+import { Registry } from "./registry.ts";
+import { Consumers } from "./consumers.ts";
 import type { MaestroConfig, MaestroEvent } from "./types.ts";
 import type { ChildSessionHandle } from "./child-session.ts";
 
@@ -87,9 +87,6 @@ export async function teardownRuntime(): Promise<void> {
 }
 
 export async function buildRuntime(store: TaskStore): Promise<MaestroRuntime> {
-  const { EventLog } = await import("./events.ts");
-  const { Registry } = await import("./registry.ts");
-  const { Consumers } = await import("./consumers.ts");
   return {
     store,
     log: await EventLog.load(store),
@@ -112,7 +109,6 @@ export async function buildRuntime(store: TaskStore): Promise<MaestroRuntime> {
  */
 export async function ensureRuntime(cwd: string): Promise<MaestroRuntime> {
   if (current) return current;
-  const { TaskStore } = await import("./task-store.ts");
   const store = await TaskStore.discover(cwd);
   if (!store) {
     throw new Error("Maestro is inactive. Run /maestro init first.");

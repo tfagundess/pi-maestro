@@ -6,10 +6,11 @@
  *   tickets/, agents/, field-notes/, artifacts/, events.jsonl, sessions/
  */
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import { mkdir, readFile, writeFile, readdir, stat } from "node:fs/promises";
+import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
 import { DEFAULT_CONFIG, type MaestroConfig } from "./types.ts";
+import { BUILTIN_BLUEPRINTS } from "./blueprints.ts";
 
 const MAESTRO_DIR_NAME = "maestro";
 const CURRENT_POINTER = "current.txt";
@@ -53,40 +54,17 @@ export class TaskStore {
 
   // ── discovery / init ─────────────────────────────────────────────────────
 
-  /** Find the current task store for this cwd: pointer file, else single dir, else none. */
+  /** Find the current task store for this cwd via its explicit pointer. */
   static async discover(cwd: string): Promise<TaskStore | null> {
     const root = maestroRoot(cwd);
-    if (!existsSync(root)) return null;
-
-    // Prefer the explicit pointer written at init.
     const pointer = join(root, CURRENT_POINTER);
-    if (existsSync(pointer)) {
-      try {
-        const taskId = (await readFile(pointer, "utf8")).trim();
-        if (taskId && existsSync(join(root, taskId))) return new TaskStore(cwd, taskId);
-      } catch { /* fall through to scan */ }
+    if (!existsSync(pointer)) return null;
+    try {
+      const taskId = (await readFile(pointer, "utf8")).trim();
+      return taskId && existsSync(join(root, taskId)) ? new TaskStore(cwd, taskId) : null;
+    } catch {
+      return null;
     }
-
-    // Fallback: a single task dir (valid = has events.jsonl).
-    const dirs: string[] = [];
-    for (const entry of await readdir(root, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      if (existsSync(join(root, entry.name, "events.jsonl"))) dirs.push(entry.name);
-    }
-    if (dirs.length === 1) return new TaskStore(cwd, dirs[0]!);
-    if (dirs.length === 0) return null;
-
-    // Multiple: pick the most recently modified.
-    let best: TaskStore | null = null;
-    let bestMtime = 0;
-    for (const id of dirs) {
-      const st = await stat(join(root, id, "events.jsonl")).catch(() => null);
-      if (st && st.mtimeMs >= bestMtime) {
-        bestMtime = st.mtimeMs;
-        best = new TaskStore(cwd, id);
-      }
-    }
-    return best;
   }
 
   /**
@@ -101,14 +79,7 @@ export class TaskStore {
     const root = maestroRoot(cwd);
     await mkdir(root, { recursive: true });
 
-    let taskId = taskName ? slugify(taskName) : "task";
-    let candidate = new TaskStore(cwd, taskId);
-    let n = 2;
-    while (existsSync(candidate.root)) {
-      taskId = `${slugify(taskName ?? "task")}-${n++}`;
-      candidate = new TaskStore(cwd, taskId);
-    }
-    const store = candidate;
+    const store = new TaskStore(cwd, slugify(taskName ?? "task"));
     await store.createStore();
     return store;
   }
@@ -154,12 +125,9 @@ export class TaskStore {
     }
 
     // agents/ — role blueprints: built-ins seeded here; custom via maestro_define_role.
-    {
-      const { BUILTIN_BLUEPRINTS } = await import("./blueprints.ts");
-      for (const b of BUILTIN_BLUEPRINTS) {
-        const file = join(this.blueprintsDir, `${b.name}.md`);
-        if (!existsSync(file)) await writeFile(file, b.content, "utf8");
-      }
+    for (const b of BUILTIN_BLUEPRINTS) {
+      const file = join(this.blueprintsDir, `${b.name}.md`);
+      if (!existsSync(file)) await writeFile(file, b.content, "utf8");
     }
 
     // config.json — policies with defaults (§8).

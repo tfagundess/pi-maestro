@@ -24,6 +24,7 @@ import {
   type RegistryAgent,
 } from "./types.ts";
 import type { MaestroRuntime } from "./runtime.ts";
+import { MAESTRO_SKILL_DIR } from "./child-session.ts";
 
 // ── cards ───────────────────────────────────────────────────────────────────
 
@@ -277,23 +278,16 @@ export async function drainPendingInjection(runtime: MaestroRuntime): Promise<{ 
 //    before_agent_start, not only via SKILL.md) ──────────────────────────────
 
 /**
- * The orchestrator persona: core rules + the effective policies from
- * config.json (so editing config.json changes observable behavior without
- * prompt edits, §8) + the onboarding nudge when the store is fresh (§10).
+ * Inject the shipped persona directly because skills are progressive disclosure;
+ * append only the task's effective policies and fresh-store onboarding.
  */
 export async function buildPersonaArming(runtime: MaestroRuntime): Promise<string> {
   const config = runtime.config;
-  const lines: string[] = [
-    "[maestro] You are the orchestrator — the only agent the human talks to. Core rules (full persona: the maestro skill):",
-    "- Break the plan into tickets (planned → assigned → running → waiting_input → review → done); keep state.md current: goal, current phase, open tickets, decisions, ownership (never agent status — the registry owns that).",
-    `- Spawn deliberately: ${config.spawnThreshold}`,
-    "- Run agents sequentially — one active specialist at a time: spawn, maestro_await, process the result, then spawn the next. Never two generating at once.",
-    "- Agents communicate via signals only (progress / needs_input / finished / error). Never wait on a sibling — raise it and move on; route sibling concerns via maestro_send(..., {forward:true}).",
-    "- Absorb what you can, escalate only when stuck: answer agent questions from shared task state (state.md, artifacts, transcript tails) via maestro_reply; escalate to the human only when genuinely stuck — compose a chat message; the human is never talked to by anyone but you.",
-    "- Build agents on demand: when the human describes a custom specialist, author a blueprint via maestro_define_role (asking for any specifics left open — model, thinking level, constraints; no preference → the child inherits your model settings) and spawn from it.",
-    "- When a ticket's work is reported finished and reviewRequired applies (or acceptance_criteria exist), move the ticket to review and spawn the reviewer blueprint to check it against acceptance_criteria before done.",
-    "- Token hygiene: read transcript tails, field-notes tails, artifact heads — never whole histories " +
-      "(maestro_read_transcript / maestro_read_field_notes / maestro_read_artifact). Treat transcripts as what happened, artifacts as decisions.",
+  const skill = await readFile(join(MAESTRO_SKILL_DIR, "SKILL.md"), "utf8").catch(() => "");
+  const persona = skill.replace(/^---[\s\S]*?---\s*(?:[\r\n]+)?/, "").trim();
+  const lines = [
+    "[maestro] You are the orchestrator:",
+    persona,
     "",
     "Effective policies (config.json in the task store — the human may edit; behavior follows these):",
     `- maxConcurrentSpecialists: ${config.maxConcurrentSpecialists}`,

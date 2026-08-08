@@ -7,7 +7,7 @@
  */
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   DEFAULT_MAX_BYTES,
@@ -30,7 +30,7 @@ import {
 import { TaskStore, readBlueprint, resolveArtifact } from "./task-store.ts";
 import { builtinBlueprint, listBlueprintNames } from "./blueprints.ts";
 import { ensureRuntime, getRuntime, type MaestroRuntime } from "./runtime.ts";
-import { buildSpawnPrompt, getChildSessionFactory, type ChildSessionHandle } from "./child-session.ts";
+import { buildSpawnPrompt, createChildSession, type ChildSessionHandle } from "./child-session.ts";
 import { awaitAgent, replyToAgent, resumeAgent, sendToAgent, stopAgent } from "./control.ts";
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -186,7 +186,6 @@ export function buildOrchestratorTools(): ToolDefinition[] {
         ? body
         : `---\nname: ${name}\n---\n\n${body}`;
       const file = join(runtime.store.blueprintsDir, `${name}.md`);
-      const { writeFile, mkdir } = await import("node:fs/promises");
       await mkdir(runtime.store.blueprintsDir, { recursive: true });
       await writeFile(file, content, "utf8");
       return {
@@ -290,7 +289,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
       const thinkingLevel = ctx.thinkingLevel;
 
       const signalTool = makeMaestroSignalTool(agentId);
-      const handle: ChildSessionHandle = await getChildSessionFactory()({
+      const handle: ChildSessionHandle = await createChildSession({
         store,
         agentId,
         role: params.role,
@@ -490,7 +489,6 @@ export function buildOrchestratorTools(): ToolDefinition[] {
       "Reads the head of the file (cap applied); use for specs, reviews, plans, execution notes.",
     parameters: Type.Object({
       path: Type.String({ description: "Artifact path relative to artifacts/ (e.g. review.md)" }),
-      agentId: Type.Optional(Type.String({ description: "Optional owning agent id (informational)" })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const runtime = await ensureRuntime(ctx.cwd);
@@ -728,9 +726,6 @@ export function buildOrchestratorTools(): ToolDefinition[] {
         thinkingLevel: ctx.thinkingLevel,
         cwd: ctx.cwd,
         signalTool: makeMaestroSignalTool(params.agentId),
-        // Through the same factory seam as spawn — test harnesses swap in
-        // scripted sessions; production default is the real createChildSession.
-        createSession: getChildSessionFactory(),
       });
       return {
         content: [
