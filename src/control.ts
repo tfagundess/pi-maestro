@@ -201,50 +201,55 @@ export async function resumeAgent(
 ): Promise<{ event: MaestroEvent; agentId: string; sessionFile: string; status: string }> {
   const agent = runtime.registry.getAgent(agentId);
   if (!agent) throw new Error(`Unknown agent: ${agentId}`);
-  if (runtime.children.has(agentId)) {
-    throw new Error(`${agentId} is already running (status: ${agent.status}) — no resume needed.`);
+  if (runtime.children.has(agentId) || runtime.resuming.has(agentId)) {
+    throw new Error(`${agentId} is already running or resuming (status: ${agent.status}) — no resume needed.`);
   }
 
-  const event = await runtime.log.append({
-    from: ORCHESTRATOR_ID,
-    to: agentId,
-    type: "resume",
-    payload: { summary: `Resumed ${agentId}` },
-  });
+  runtime.resuming.add(agentId);
+  try {
+    const event = await runtime.log.append({
+      from: ORCHESTRATOR_ID,
+      to: agentId,
+      type: "resume",
+      payload: { summary: `Resumed ${agentId}` },
+    });
 
-  const blueprint =
-    (await readBlueprint(runtime.store, agent.role)) ?? builtinBlueprint(agent.role) ?? "";
-  const fieldNotesPath = safeRelativePath(runtime.store.fieldNotesDir, `${agentId}.md`, "Field notes path");
-  const fieldNotes = await readFile(fieldNotesPath, "utf8").catch(() => "");
-  const prompt = await buildResumePrompt({
-    store: runtime.store,
-    agentId,
-    role: agent.role,
-    blueprint,
-    fieldNotes,
-  });
+    const blueprint =
+      (await readBlueprint(runtime.store, agent.role)) ?? builtinBlueprint(agent.role) ?? "";
+    const fieldNotesPath = safeRelativePath(runtime.store.fieldNotesDir, `${agentId}.md`, "Field notes path");
+    const fieldNotes = await readFile(fieldNotesPath, "utf8").catch(() => "");
+    const prompt = await buildResumePrompt({
+      store: runtime.store,
+      agentId,
+      role: agent.role,
+      blueprint,
+      fieldNotes,
+    });
 
-  const sessionFile = await assertRealPathInside(runtime.store.sessionsDir, agent.sessionFile, "Session");
-  const handle = await createChildSession({
-    store: runtime.store,
-    agentId,
-    role: agent.role,
-    blueprint,
-    task: "", // resume does not re-inject the task — the transcript has it
-    log: runtime.log,
-    signalTool: opts.signalTool,
-    model: opts.model,
-    thinkingLevel: opts.thinkingLevel,
-    cwd: opts.cwd,
-    sessionFile,
-  });
-  runtime.children.set(agentId, handle);
+    const sessionFile = await assertRealPathInside(runtime.store.sessionsDir, agent.sessionFile, "Session");
+    const handle = await createChildSession({
+      store: runtime.store,
+      agentId,
+      role: agent.role,
+      blueprint,
+      task: "", // resume does not re-inject the task — the transcript has it
+      log: runtime.log,
+      signalTool: opts.signalTool,
+      model: opts.model,
+      thinkingLevel: opts.thinkingLevel,
+      cwd: opts.cwd,
+      sessionFile,
+    });
+    runtime.children.set(agentId, handle);
 
-  runtime.registry.addAgent({ ...agent, status: "running", sessionFile: handle.sessionFile });
-  await runtime.registry.persist(runtime.store);
+    runtime.registry.addAgent({ ...agent, status: "running", sessionFile: handle.sessionFile });
+    await runtime.registry.persist(runtime.store);
 
-  handle.start(prompt);
-  return { event, agentId, sessionFile: handle.sessionFile, status: "running" };
+    handle.start(prompt);
+    return { event, agentId, sessionFile: handle.sessionFile, status: "running" };
+  } finally {
+    runtime.resuming.delete(agentId);
+  }
 }
 
 /** Options for autoResumeInterrupted. */

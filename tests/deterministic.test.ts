@@ -279,6 +279,50 @@ export default function (pi) {
       }, undefined, () => {}, ctx);
       await feed.settled();
       const contextAfterError = await buildOrchestratorContext(runtime, false);
+      const duplicateResume = await call("maestro_resume", { agentId: "qa-1" })
+        .then(() => "no error", (error) => error.message);
+      const idleAfterRun = await call("maestro_await", { agentId: "qa-1", timeout: 5 });
+      runtime.registry.addAgent({
+        id: "qa-3",
+        role: "qa",
+        model: "test",
+        status: "interrupted",
+        sessionFile: join(runtime.store.sessionsDir, "missing-qa-3.jsonl"),
+        scope: ["tests/resume-race"],
+        parent: "orchestrator",
+        spawnedAt: new Date().toISOString(),
+      });
+      await runtime.registry.persist(runtime.store);
+      const resumeRace = await Promise.all([
+        call("maestro_resume", { agentId: "qa-3" }).then(() => "no error", (error) => error.message),
+        call("maestro_resume", { agentId: "qa-3" }).then(() => "no error", (error) => error.message),
+      ]);
+      const resumeRaceEvents = (await runtime.log.read(0)).filter((event) => event.type === "resume" && event.to === "qa-3");
+      let aborted = false;
+      runtime.registry.addAgent({
+        id: "qa-2",
+        role: "qa",
+        model: "test",
+        status: "running",
+        sessionFile: join(runtime.store.sessionsDir, "qa-2.jsonl"),
+        scope: ["tests/streaming"],
+        parent: "orchestrator",
+        spawnedAt: new Date().toISOString(),
+      });
+      await runtime.registry.persist(runtime.store);
+      runtime.children.set("qa-2", {
+        agentId: "qa-2",
+        sessionFile: join(runtime.store.sessionsDir, "qa-2.jsonl"),
+        session: {
+          isStreaming: true,
+          steer: async () => {},
+          abort: async () => { aborted = true; },
+        },
+        dispose: () => {},
+      });
+      const streamingSend = await call("maestro_send", { agentId: "qa-2", message: "Stop while delivering." });
+      const timedOut = await call("maestro_await", { agentId: "qa-2", timeout: 1 });
+      const streamingStop = await call("maestro_stop", { agentId: "qa-2" });
       const stop = await call("maestro_stop", { agentId: "qa-1", ticket: "T-1" });
       const ignored = await signal.execute("test-signal-stopped", {
         type: "finished",
@@ -287,7 +331,7 @@ export default function (pi) {
       const status = await call("maestro_status", {});
       const history = await call("maestro_history", { agentId: "qa-1", tail: 20 });
       feed.detach();
-      const results = { init, progress, needsInput, awaited, reply, send, artifact, failedSend, errorSignal, stop, ignored, status, history, feed: feedSeen, contextAfterError, invalidRole, scopeOverlap, badArtifact, badWindowsArtifact, symlinkArtifact, concurrent, recovered, recoveredEvents, renderedCard: Boolean(renderedCard), renderedFrame };
+      const results = { init, progress, needsInput, awaited, reply, send, artifact, failedSend, errorSignal, duplicateResume, idleAfterRun, resumeRace, resumeRaceEvents, streamingSend, timedOut, streamingStop, aborted, stop, ignored, status, history, feed: feedSeen, contextAfterError, invalidRole, scopeOverlap, badArtifact, badWindowsArtifact, symlinkArtifact, concurrent, recovered, recoveredEvents, renderedCard: Boolean(renderedCard), renderedFrame };
       await writeFile(join(ctx.cwd, "tool-results.json"), JSON.stringify(results, null, 2));
     },
   });
@@ -327,6 +371,14 @@ export default function (pi) {
   assert.match(results.reply.content[0].text, /Reply command recorded/);
   assert.match(results.send.content[0].text, /forward command recorded/);
   assert.match(results.artifact.content[0].text, /QA artifact/);
+  assert.match(results.duplicateResume, /already running/);
+  assert.equal(results.resumeRaceEvents.length, 1);
+  assert.equal(results.resumeRace.some((message) => /already running or resuming/.test(message)), true);
+  assert.equal(results.idleAfterRun.details.status, "idle");
+  assert.equal(results.timedOut.details.status, "timeout");
+  assert.equal(results.streamingSend.details.delivered, true);
+  assert.equal(results.streamingStop.details.status, "stopped");
+  assert.equal(results.aborted, true);
   assert.equal(results.failedSend.details.delivered, true);
   assert.match(results.errorSignal.content[0].text, /Signal recorded/);
   assert.equal(results.stop.details.status, "stopped");

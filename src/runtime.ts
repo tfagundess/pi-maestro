@@ -19,6 +19,8 @@ export interface MaestroRuntime {
   config: MaestroConfig;
   /** Live embedded child sessions (disposed on shutdown). */
   children: Map<string, ChildSessionHandle>;
+  /** Resume operations in flight; prevents duplicate concurrent resumes. */
+  resuming: Set<string>;
   /** Action signals (needs_input / finished / error) the feed has rendered but
    * the orchestrator LLM has not yet been told about. Drained by the
    * `before_agent_start` injection. Per-process, so a restart starts
@@ -71,6 +73,7 @@ export async function buildRuntime(store: TaskStore): Promise<MaestroRuntime> {
     consumers: await Consumers.load(store),
     config: await store.loadConfig(),
     children: new Map(),
+    resuming: new Set(),
     attention: [],
     reportedInterrupted: new Set(),
     consumedSignals: new Set(),
