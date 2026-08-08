@@ -1,16 +1,18 @@
 /**
- * The Task Store — durable state of one orchestrated task (§3).
+ * The Task Store — durable state for one orchestrated task.
  *
  * Layout (under `<cwd>/.pi/maestro/<task-id>/`):
  *   agents.json, consumer.json, state.md, config.json,
  *   tickets/, agents/, field-notes/, artifacts/, events.jsonl, sessions/
  */
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { DEFAULT_CONFIG, type MaestroConfig } from "./types.ts";
 import { BUILTIN_BLUEPRINTS } from "./blueprints.ts";
+import { writeAtomic } from "./persistence.ts";
+import { assertIdentifier, assertRealPathInside, safeRelativePath, validIdentifier } from "./paths.ts";
 
 const MAESTRO_DIR_NAME = "maestro";
 const CURRENT_POINTER = "current.txt";
@@ -61,7 +63,11 @@ export class TaskStore {
     if (!existsSync(pointer)) return null;
     try {
       const taskId = (await readFile(pointer, "utf8")).trim();
-      return taskId && existsSync(join(root, taskId)) ? new TaskStore(cwd, taskId) : null;
+      if (!validIdentifier(taskId)) return null;
+      const candidate = join(root, taskId);
+      if (!existsSync(candidate) || !(await stat(candidate)).isDirectory()) return null;
+      await assertRealPathInside(root, candidate, "Task store");
+      return new TaskStore(cwd, taskId);
     } catch {
       return null;
     }
@@ -94,7 +100,7 @@ export class TaskStore {
 
     // state.md — five sections, orchestrator-owned dashboard.
     if (!existsSync(this.statePath)) {
-      await writeFile(
+      await writeAtomic(
         this.statePath,
         [
           "# Task State",
@@ -120,19 +126,18 @@ export class TaskStore {
           "(agent id · role · scope — one line per specialist)",
           "",
         ].join("\n"),
-        "utf8",
       );
     }
 
     // agents/ — role blueprints: built-ins seeded here; custom via maestro_define_role.
     for (const b of BUILTIN_BLUEPRINTS) {
       const file = join(this.blueprintsDir, `${b.name}.md`);
-      if (!existsSync(file)) await writeFile(file, b.content, "utf8");
+      if (!existsSync(file)) await writeAtomic(file, b.content);
     }
 
-    // config.json — policies with defaults (§8).
+    // config.json — policies with defaults.
     if (!existsSync(this.configPath)) {
-      await writeFile(this.configPath, JSON.stringify(DEFAULT_CONFIG, null, 2) + "\n", "utf8");
+      await writeAtomic(this.configPath, JSON.stringify(DEFAULT_CONFIG, null, 2) + "\n");
     }
 
     // agents.json — registry (lineage + status).
@@ -142,38 +147,51 @@ export class TaskStore {
         createdAt: new Date().toISOString(),
         agents: {},
       };
-      await writeFile(this.registryPath, JSON.stringify(registry, null, 2) + "\n", "utf8");
+      await writeAtomic(this.registryPath, JSON.stringify(registry, null, 2) + "\n");
     }
 
     // consumer.json — per-consumer cursors; the orchestrator entry is the
-    // watermark, the orchestrator-ui entry is the card render position (§3, §5).
+    // watermark; the orchestrator-ui entry is the card render position.
     if (!existsSync(this.consumersPath)) {
-      await writeFile(
+      await writeAtomic(
         this.consumersPath,
         JSON.stringify(
           { consumers: { orchestrator: { lastSequence: 0 }, "orchestrator-ui": { lastSequence: 0 } } },
           null,
           2,
         ) + "\n",
-        "utf8",
       );
     }
 
     // events.jsonl — empty, append-only.
     if (!existsSync(this.eventsPath)) {
-      await writeFile(this.eventsPath, "", "utf8");
+      await writeAtomic(this.eventsPath, "");
     }
 
     // Pointer for restart discovery.
-    await writeFile(join(maestroRoot(this.cwd), CURRENT_POINTER), this.taskId + "\n", "utf8");
+    await writeAtomic(join(maestroRoot(this.cwd), CURRENT_POINTER), this.taskId + "\n");
   }
 
   // ── config ───────────────────────────────────────────────────────────────
   async loadConfig(): Promise<MaestroConfig> {
     try {
-      const raw = await readFile(this.configPath, "utf8");
-      const parsed = JSON.parse(raw) as Partial<MaestroConfig>;
-      return { ...DEFAULT_CONFIG, ...parsed };
+      const parsed: unknown = JSON.parse(await readFile(this.configPath, "utf8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ...DEFAULT_CONFIG };
+      const value = parsed as Record<string, unknown>;
+      return {
+        maxConcurrentSpecialists:
+          Number.isSafeInteger(value.maxConcurrentSpecialists) && (value.maxConcurrentSpecialists as number) > 0
+            ? (value.maxConcurrentSpecialists as number)
+            : DEFAULT_CONFIG.maxConcurrentSpecialists,
+        autoResume: typeof value.autoResume === "boolean" ? value.autoResume : DEFAULT_CONFIG.autoResume,
+        reviewRequired: Array.isArray(value.reviewRequired)
+          ? value.reviewRequired.filter((v): v is string => typeof v === "string")
+          : [...DEFAULT_CONFIG.reviewRequired],
+        approvalRules: Array.isArray(value.approvalRules)
+          ? value.approvalRules.filter((v): v is string => typeof v === "string")
+          : [...DEFAULT_CONFIG.approvalRules],
+        spawnThreshold: typeof value.spawnThreshold === "string" ? value.spawnThreshold : DEFAULT_CONFIG.spawnThreshold,
+      };
     } catch {
       return { ...DEFAULT_CONFIG };
     }
@@ -181,7 +199,7 @@ export class TaskStore {
 
   // ── state.md (orchestrator-owned dashboard) ──────────────────────────────
 
-  /** Append a line under the `## Ownership` section of state.md (one line per specialist, §3). */
+  /** Append a line under the `## Ownership` section of state.md. */
   async recordOwnership(agentId: string, role: string, scope: string[]): Promise<void> {
     const scopeText = scope.length > 0 ? ` · scope: ${scope.join(", ")}` : "";
     const line = `- ${agentId} · role: ${role}${scopeText}`;
@@ -194,19 +212,18 @@ export class TaskStore {
       // Idempotent per specialist; never clobber the other entries (the old
       // implementation replaced the whole section with the last line).
       if (tail.split("\n").some((l) => l.trim().startsWith(`- ${agentId} ·`))) return;
-      await writeFile(this.statePath, `${head}${line}\n${tail}`, "utf8");
+      await writeAtomic(this.statePath, `${head}${line}\n${tail}`);
     } else {
-      await writeFile(this.statePath, `${current}\n${section}${line}\n`, "utf8");
+      await writeAtomic(this.statePath, `${current}\n${section}${line}\n`);
     }
   }
 
-  /** Render the shared context slice for a specialist's spawn prompt (§9). */
+  /** Render the bounded shared context slice for a specialist's spawn prompt. */
   async renderContextSlice(): Promise<string> {
     const parts: string[] = [];
 
-    // The task store root anchors every relative path the specialist sees
-    // (§9): state.md, tickets/, artifacts/, field-notes/ are all relative to
-    // this directory — NOT to the child's cwd.
+    // The task store root anchors every relative path the specialist sees.
+    // State paths are relative to this directory — NOT to the child's cwd.
     parts.push(`Task store root: ${this.root} — paths below are relative to it (state.md, tickets/, artifacts/, field-notes/).`);
 
     const state = await readFile(this.statePath, "utf8").catch(() => "# Task State\n(empty)");
@@ -236,28 +253,28 @@ export class TaskStore {
 
   /** Path of an artifact resolved safely against the artifacts dir. */
   artifactPath(path: string): string {
-    const resolved = join(this.artifactsDir, path);
-    const rel = relative(this.artifactsDir, resolved);
-    if (rel.startsWith("..") || rel.includes(".." + "/")) {
+    try {
+      return safeRelativePath(this.artifactsDir, path, "Artifact path");
+    } catch {
       throw new Error(`Artifact path escapes the artifacts dir: ${path}`);
     }
-    return resolved;
   }
 
   /**
-   * Create the per-agent field-notes stub (§8): the specialist appends things
+   * Create the per-agent field-notes stub: the specialist appends things
    * learned / architecture notes / pitfalls / useful commands as it works.
    * Idempotent — never overwrites what the agent recorded.
    */
   async createFieldNotes(agentId: string, role: string): Promise<void> {
+    assertIdentifier(agentId, "agent id");
     const file = join(this.fieldNotesDir, `${agentId}.md`);
     if (existsSync(file)) return;
-    await writeFile(file, `# Field notes — ${agentId} (${role})\n`, "utf8");
+    await writeAtomic(file, `# Field notes — ${agentId} (${role})\n`);
   }
 }
 
 /**
- * Digest of state.md for the injected context slice (§9): the compact,
+ * Digest of state.md for the injected context slice: the compact,
  * orchestrator-maintained sections (Goal, Current phase, Open tickets,
  * Ownership) pass through verbatim; long-lived sections (Decisions) are capped
  * so the slice stays lean as the dashboard grows. Falls back to the full file
@@ -303,19 +320,14 @@ function stateDigest(state: string): string {
   return out.join("\n");
 }
 
-/** Resolve an artifact path that may be absolute or relative to cwd. */
+/** Resolve an artifact path relative to the task store's artifacts directory. */
 export function resolveArtifact(store: TaskStore, path: string): string {
-  if (path.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(path)) {
-    const rel = relative(store.artifactsDir, path);
-    if (rel.startsWith("..")) throw new Error(`Artifact outside the task store: ${path}`);
-    return path;
-  }
   return store.artifactPath(path);
 }
 
 /** Read a role blueprint (built-in or user-authored) from the store. */
 export async function readBlueprint(store: TaskStore, role: string): Promise<string | null> {
-  if (role.includes("/") || role.includes("..")) return null;
+  if (!validIdentifier(role)) return null;
   const custom = join(store.blueprintsDir, `${role}.md`);
   if (existsSync(custom)) return readFile(custom, "utf8");
   return null;

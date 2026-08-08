@@ -1,5 +1,5 @@
 /**
- * Built-in role blueprints (§9) — small, reusable role definitions that
+ * Built-in role blueprints — small, reusable role definitions that
  * `maestro_spawn` composes into a child's persona. Custom ones are authored
  * by the orchestrator via `maestro_define_role` into the Task Store's
  * `agents/` directory (which shadows the same role name).

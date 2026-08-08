@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -145,6 +145,13 @@ test("corrupt persisted config and registry fall back without crashing", async (
   await writeFile(join(store, "agents.json"), "{not-json\n", "utf8");
   await runPi(cwd, "/maestro init corrupt");
   await runPi(cwd, "/maestro status");
+  const maestroRoot = join(cwd, ".pi", "maestro");
+  await writeFile(join(maestroRoot, "current.txt"), "../escape\n", "utf8");
+  await runPi(cwd, "/maestro status");
+  await mkdir(join(cwd, "outside-store"), { recursive: true });
+  await symlink(join(cwd, "outside-store"), join(maestroRoot, "linked"));
+  await writeFile(join(maestroRoot, "current.txt"), "linked\n", "utf8");
+  await runPi(cwd, "/maestro status");
   assert.equal(existsSync(join(store, "config.json")), true);
   assert.equal(existsSync(join(store, "agents.json")), true);
 });
@@ -156,7 +163,7 @@ test("registered Maestro tools perform an orchestrator workflow", async () => {
   await writeFile(
     helper,
     `import { join } from "node:path";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, symlink, writeFile } from "node:fs/promises";
 import maestro from ${JSON.stringify(extension)};
 import { buildOrchestratorTools, makeMaestroSignalTool } from ${JSON.stringify(join(root, "src", "tools.ts"))};
 import { EventLog } from ${JSON.stringify(join(root, "src", "events.ts"))};
@@ -204,11 +211,17 @@ export default function (pi) {
       });
       await runtime.registry.persist(runtime.store);
       await writeFile(join(runtime.store.artifactsDir, "qa.md"), "QA artifact\\n", "utf8");
+      await writeFile(join(ctx.cwd, "outside.md"), "outside\\n", "utf8");
+      await symlink(join(ctx.cwd, "outside.md"), join(runtime.store.artifactsDir, "outside-link.md"));
       const invalidRole = await call("maestro_define_role", { name: "bad/name", blueprint: "invalid" })
         .then(() => "no error", (error) => error.message);
       const scopeOverlap = await call("maestro_spawn", { role: "qa", task: "blocked", scope: ["tests"] })
         .then(() => "no error", (error) => error.message);
       const badArtifact = await call("maestro_read_artifact", { path: "../state.md" })
+        .then(() => "no error", (error) => error.message);
+      const badWindowsArtifact = await call("maestro_read_artifact", { path: "..\\\\state.md" })
+        .then(() => "no error", (error) => error.message);
+      const symlinkArtifact = await call("maestro_read_artifact", { path: "outside-link.md" })
         .then(() => "no error", (error) => error.message);
       let renderer;
       registerMaestroCards({ registerEntryRenderer: (_name, render) => { renderer = render; } });
@@ -274,7 +287,7 @@ export default function (pi) {
       const status = await call("maestro_status", {});
       const history = await call("maestro_history", { agentId: "qa-1", tail: 20 });
       feed.detach();
-      const results = { init, progress, needsInput, awaited, reply, send, artifact, failedSend, errorSignal, stop, ignored, status, history, feed: feedSeen, contextAfterError, invalidRole, scopeOverlap, badArtifact, concurrent, recovered, recoveredEvents, renderedCard: Boolean(renderedCard), renderedFrame };
+      const results = { init, progress, needsInput, awaited, reply, send, artifact, failedSend, errorSignal, stop, ignored, status, history, feed: feedSeen, contextAfterError, invalidRole, scopeOverlap, badArtifact, badWindowsArtifact, symlinkArtifact, concurrent, recovered, recoveredEvents, renderedCard: Boolean(renderedCard), renderedFrame };
       await writeFile(join(ctx.cwd, "tool-results.json"), JSON.stringify(results, null, 2));
     },
   });
@@ -295,6 +308,8 @@ export default function (pi) {
   assert.match(results.invalidRole, /Invalid role name/);
   assert.match(results.scopeOverlap, /Scope overlap/);
   assert.match(results.badArtifact, /escapes the artifacts dir/);
+  assert.match(results.badWindowsArtifact, /escapes the artifacts dir/);
+  assert.match(results.symlinkArtifact, /escapes its directory/);
   assert.match(results.progress.content[0].text, /Signal recorded/);
   assert.match(results.needsInput.content[0].text, /Signal recorded/);
   assert.equal(results.awaited.details.status, "signal");

@@ -1,6 +1,6 @@
 /**
  * The event log — `events.jsonl`, the append-only record of all signals and
- * commands (§5). One envelope, one log, any number of producers.
+ * commands. One envelope, one log, any number of producers.
  *
  * Ordering rules:
  * - `sequence` is the ONLY ordering key (never timestamps — clocks skew).
@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import { isCommandType, type MaestroEvent } from "./types.ts";
 import type { TaskStore } from "./task-store.ts";
 
-// ── in-process append notification (§5) ─────────────────────────────────────
+// ── in-process append notification ─────────────────────────────────────
 // An in-process callback is ONLY a *notification* that new events exist —
 // never a delivery path. The feed (the single consumer) reads the log past its
 // cursors; this just tells it to look.
@@ -64,8 +64,8 @@ export class EventLog {
         if (!line.trim()) continue;
         try {
           const seq = (JSON.parse(line) as MaestroEvent).sequence;
-          if (typeof seq === "number" && seq >= next) next = seq + 1;
-        } catch { /* skip malformed trailing line */ }
+          if (Number.isSafeInteger(seq) && seq > 0 && seq >= next) next = seq + 1;
+        } catch { /* skip malformed line */ }
       }
     }
     return new EventLog(store, next);
@@ -113,6 +113,7 @@ export class EventLog {
       if (!line.trim()) continue;
       try {
         const evt = JSON.parse(line) as MaestroEvent;
+        if (!Number.isSafeInteger(evt.sequence) || evt.sequence <= 0 || typeof evt.type !== "string") continue;
         if (evt.sequence >= fromSequence) events.push(evt);
       } catch { /* skip malformed line */ }
     }

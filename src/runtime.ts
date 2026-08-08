@@ -21,7 +21,7 @@ export interface MaestroRuntime {
   children: Map<string, ChildSessionHandle>;
   /** Action signals (needs_input / finished / error) the feed has rendered but
    * the orchestrator LLM has not yet been told about. Drained by the
-   * `before_agent_start` injection (Phase 2). Per-process, so a restart starts
+   * `before_agent_start` injection. Per-process, so a restart starts
    * fresh — unconsumed signals re-enter from the log via reconcile.
    */
   attention: MaestroEvent[];
@@ -37,29 +37,6 @@ export interface MaestroRuntime {
 }
 
 let current: MaestroRuntime | null = null;
-
-// ── runtime-ready notification ─────────────────────────────────────────────
-// Lets session-scoped wiring (the feed) attach when an explicitly activated
-// runtime is loaded after startup, while keeping the extension dormant before
-// `/maestro init`.
-const runtimeReadyListeners = new Set<(runtime: MaestroRuntime) => void>();
-
-export function onRuntimeReady(fn: (runtime: MaestroRuntime) => void): () => void {
-  runtimeReadyListeners.add(fn);
-  return () => {
-    runtimeReadyListeners.delete(fn);
-  };
-}
-
-export function notifyRuntimeReady(runtime: MaestroRuntime): void {
-  for (const fn of [...runtimeReadyListeners]) {
-    try {
-      fn(runtime);
-    } catch {
-      /* notification is best-effort */
-    }
-  }
-}
 
 export function setRuntime(runtime: MaestroRuntime): void {
   current = runtime;
@@ -104,7 +81,7 @@ export async function buildRuntime(store: TaskStore): Promise<MaestroRuntime> {
  * Load an existing runtime when one is already active or when an explicitly
  * activated child/RPC path needs to recover the current store.
  *
- * This function deliberately never calls `TaskStore.init()`. Creating a task
+ * This function deliberately never calls `TaskStore.init`. Creating a task
  * store is an activation boundary and is owned exclusively by `/maestro init`.
  */
 export async function ensureRuntime(cwd: string): Promise<MaestroRuntime> {
@@ -115,6 +92,5 @@ export async function ensureRuntime(cwd: string): Promise<MaestroRuntime> {
   }
   const runtime = await buildRuntime(store);
   setRuntime(runtime);
-  notifyRuntimeReady(runtime);
   return runtime;
 }

@@ -64,7 +64,7 @@ export interface RegistryAgent {
   sessionFile: string;
   /** Files/modules the specialist owns; never overlaps another agent's scope. */
   scope: string[];
-  /** Always "orchestrator" in the current design (agent→agent is an extension, §13). */
+  /** Always "orchestrator" in the current design; agent-to-agent is not exposed. */
   parent: string;
   spawnedAt: string;
 }
@@ -75,9 +75,9 @@ export interface RegistryFile {
   agents: Record<string, RegistryAgent>;
 }
 
-/** Policies (config.json) — defaults match the skill rules (§8). */
+/** Policies persisted in config.json; defaults match the skill rules. */
 export interface MaestroConfig {
-  /** 1 = the sequential model; raising it is an extension (§13). */
+  /** 1 = the sequential model; raising it is an extension. */
   maxConcurrentSpecialists: number;
   /** Startup re-attach: false = orchestrator surfaces interrupted agents and asks. */
   autoResume: boolean;
@@ -109,7 +109,7 @@ export interface ConsumerFile {
 export const ORCHESTRATOR_ID = "orchestrator";
 
 /**
- * The feed's render cursor (§3: UI consumers get their own cursor). Cards are
+ * The feed's render cursor: UI consumers get their own cursor. Cards are
  * appended once per event (persisted in the session file) and never re-rendered;
  * the watermark (orchestrator) governs *consumption* — what the orchestrator LLM
  * has been told about. Two cursors, one monotonic feed.

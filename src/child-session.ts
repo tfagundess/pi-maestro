@@ -1,5 +1,5 @@
 /**
- * Embedded child sessions (§14) — specialists run in-process via
+ * Embedded child sessions — specialists run in-process via
  * `createAgentSession`, each with its own model, thinking level, and a
  * file-backed transcript under the Task Store's `sessions/` dir.
  *
@@ -7,7 +7,7 @@
  * (read/bash/edit/write) plus exactly one maestro tool — `maestro_signal`.
  * The `maestro-child` protocol skill is injected via the ResourceLoader
  * AND the core rules are baked into the spawn prompt (never rely on the
- * child discovering the skill on its own, §14).
+ * child discovering the skill on its own).
  */
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -24,6 +24,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { TaskStore } from "./task-store.ts";
 import type { EventLog } from "./events.ts";
+import { safeRelativePath } from "./paths.ts";
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(SRC_DIR, "..");
@@ -42,7 +43,7 @@ export interface ChildSessionOptions {
   model?: Model<any>;
   thinkingLevel?: ThinkingLevel;
   cwd: string;
-  /** Resume: open an existing session file instead of creating a new one (Phase 3). */
+  /** Resume: open an existing session file instead of creating a new one. */
   sessionFile?: string;
 }
 
@@ -71,10 +72,11 @@ export async function buildSpawnPrompt(opts: {
   const contextSlice = await opts.store.renderContextSlice();
   const protocol = await readFile(join(MAESTRO_CHILD_SKILL_DIR, "SKILL.md"), "utf8").catch(() => "");
   const protocolCore = stripFrontmatter(protocol).trim();
-  // Field-notes slice (§9): the specialist's own notebook, injected at spawn
-  // and at resume (Phase 5). The stub is created by maestro_spawn; whatever
+  // Field-notes slice: the specialist's own notebook, injected at spawn
+  // and at resume. The stub is created by maestro_spawn; whatever
   // was recorded in earlier tickets rides along on every follow-up spawn.
-  const fieldNotes = await readFile(join(opts.store.fieldNotesDir, `${opts.agentId}.md`), "utf8").catch(() => "");
+  const fieldNotesPath = safeRelativePath(opts.store.fieldNotesDir, `${opts.agentId}.md`, "Field notes path");
+  const fieldNotes = await readFile(fieldNotesPath, "utf8").catch(() => "");
   const notes = fieldNotes.trim()
     ? fieldNotes.trim()
     : "(none yet — record things learned, architecture notes, pitfalls, and useful commands as you work)";
@@ -111,7 +113,7 @@ export async function createChildSession(
   // Clean, role-fixed tool surface: no auto-discovered extensions in the
   // child (extensions are orchestrator-side; a child registers exactly one
   // maestro tool). Standard coding tools stay available so the specialist
-  // can actually work and write artifacts (§8, §11).
+  // can actually work and write artifacts.
   const loader = new DefaultResourceLoader({
     cwd: opts.cwd,
     agentDir: getAgentDir(),
@@ -166,10 +168,9 @@ export async function createChildSession(
 }
 
 /**
- * Assemble the resume context slice (§11): blueprint + shared state + field
+ * Assemble the resume context slice: blueprint + shared state + field
  * notes + protocol, with the continuation prompt "here are your field notes —
- * continue from your transcript". The field-notes lifecycle completes in
- * Phase 5; the plumbing (read + inject) lands here.
+ * continue from your transcript".
  */
 export async function buildResumePrompt(opts: {
   store: TaskStore;

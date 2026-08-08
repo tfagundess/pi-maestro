@@ -37,8 +37,8 @@ you informed. You stay in one conversation the whole time.
   *artifacts* (what it produced) between tickets. A specialist stays the
   expert in its area across the whole task.
 - **It survives crashes.** An append-only event log with per-consumer
-  watermarks means no lost or duplicated work — verified with real SIGKILL
-  tests, not just in theory.
+  watermarks preserves the recorded workflow across restarts; restart recovery
+  and resume are covered by the local test suites.
 - **You're only interrupted when it matters.** Routine progress goes to a
   status line, not your chat. Only genuinely human decisions wake you.
 - **Everything is inspectable.** The log, registry, artifacts, and notes are
@@ -152,11 +152,11 @@ task state first.
 
 ### After a crash
 
-Kill pi mid-task, restart in the same directory, then run `/maestro init` to
-resume the task. Specialists are marked `interrupted`, their pending questions
-come back, and `maestro_resume` picks them up exactly where they stopped — no
-lost or duplicated work. Maestro stays dormant on restart until you run that
-command.
+Restart Pi in the same directory, then run `/maestro init` to recover the task.
+Live embedded children are marked `interrupted`, pending signals remain in the
+event log, and `maestro_resume` can reopen a child's transcript. Maestro stays
+dormant on restart until you run that command; recovery is persisted state, not
+a sandbox or a guarantee that external model work was completed exactly once.
 
 ### Names and roles
 
@@ -181,15 +181,17 @@ Written on first init, with defaults:
   "maxConcurrentSpecialists": 1,
   "autoResume": false,
   "reviewRequired": [],
-  "approvalRules": ["delete", "api_change", "wide_diff"]
+  "approvalRules": ["delete", "api_change", "wide_diff"],
+  "spawnThreshold": "substantial multi-step or async work"
 }
 ```
 
 - `maxConcurrentSpecialists: 1` — sequential mode (strict guard).
 - `autoResume` — resume interrupted specialists automatically on restart
   (default `false` — you decide).
-- `reviewRequired` / `approvalRules` — hints for when the orchestrator should
-  add a review step or ask you for approval.
+- `reviewRequired` / `approvalRules` — advisory hints for when the orchestrator
+  should add a review step or ask you for approval; they are not enforcement.
+- `spawnThreshold` — advisory guidance for when the orchestrator should delegate.
 
 ## Where everything lives
 
@@ -203,6 +205,6 @@ Written on first init, with defaults:
 ├── tickets/            # ticket files (orchestrator-owned)
 ├── artifacts/          # what specialists produced
 ├── field-notes/        # what specialists learned
-├── blueprints/         # reusable role definitions
+├── agents/             # reusable role definitions
 └── sessions/           # specialist transcripts
 ```

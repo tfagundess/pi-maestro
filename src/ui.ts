@@ -1,5 +1,5 @@
 /**
- * TUI surface for the agent feed (§4) — the passive channel.
+ * TUI surface for the agent feed — the passive channel.
  *
  * - Cards: `pi.registerEntryRenderer("maestro-card", ...)` renders every event
  *   (signals + commands) past the render cursor as a card in the transcript.
@@ -106,7 +106,7 @@ export function registerMaestroCards(pi: ExtensionAPI): void {
   });
 }
 
-// ── footer (§4 status line) ─────────────────────────────────────────────────
+// ── footer ( status line) ─────────────────────────────────────────────────
 
 /** current phase · specialist status · ticket progress · blocked work. */
 export async function buildFooterText(runtime: MaestroRuntime): Promise<string> {
@@ -186,7 +186,7 @@ export async function refreshFooter(ctx: ExtensionContext, runtime: MaestroRunti
   ctx.ui.setStatus("maestro", await buildFooterText(runtime));
 }
 
-// ── orchestrator wake / pending injection (§4 channel 2, §11) ───────────────
+// ── orchestrator wake / pending injection ───────────────────────────────
 
 /** Content of the wake message sent to the orchestrator LLM on an action signal. */
 export function wakeMessage(event: MaestroEvent): string {
@@ -273,7 +273,7 @@ export async function drainPendingInjection(runtime: MaestroRuntime): Promise<{ 
   return { content };
 }
 
-// ── persona arming (§14: pi skills are progressive disclosure — the model may
+// ── persona arming: pi skills are progressive disclosure — the model may
 //    not load the maestro skill on its own, so the core rules are injected via
 //    before_agent_start, not only via SKILL.md) ──────────────────────────────
 
@@ -306,8 +306,8 @@ export async function buildPersonaArming(runtime: MaestroRuntime): Promise<strin
 }
 
 /**
- * The per-turn orchestrator context: the persona (once per process — the model
- * may not load the skill on its own, §14) + the pending-signal injection.
+ * The per-turn orchestrator context: the persona (once per process; the model
+ * may not load the skill on its own, plus the pending-signal injection.
  * Returns null when there is nothing to inject.
  */
 export async function buildOrchestratorContext(

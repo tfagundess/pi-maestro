@@ -1,5 +1,5 @@
 /**
- * The single consumer of the event log — SignalFeed (§5 consumption rules).
+ * The single consumer of the event log — SignalFeed consumption rules.
  *
  * Delivery path: the feed reads `events.jsonl` in sequence order past its
  * cursors and processes each entry; an in-process callback (see events.ts
@@ -7,7 +7,7 @@
  * delivery path. One consumer ⇒ no duplicates by construction; cursors advance
  * only after the entry is processed.
  *
- * Two cursors (consumer.json — §3 lets UI consumers have their own cursor):
+ * Two cursors in consumer.json let the UI consumer keep its own position:
  * - `orchestrator`    — the watermark. Advances when an entry is *consumed*:
  *   informational entries (progress, commands) at render; action signals
  *   (needs_input / finished / error) when the orchestrator LLM is woken, or
@@ -16,7 +16,7 @@
  *   Cards persist in the session file, so a restart re-renders only entries
  *   past this cursor ("consumed ones don't re-render"; "exactly once").
  *
- * Wake policy (§13 open question 1 — resolved here):
+ * Wake policy: the orchestrator wakes on actionable signals, never progress.
  *   Wake the orchestrator on `needs_input` / `finished` / `error` addressed to
  *   it; NEVER on bare `progress`. Commands (orchestrator → agent) never wake.
  *   `requires` is a hint for what the orchestrator does once woken, not a
@@ -30,7 +30,7 @@ import {
   type RegistryAgent,
 } from "./types.ts";
 import { onEventAppended } from "./events.ts";
-import { getRuntime, onRuntimeReady, type MaestroRuntime } from "./runtime.ts";
+import { getRuntime, type MaestroRuntime } from "./runtime.ts";
 import { applySignalStatus } from "./control.ts";
 
 /** What the feed needs from the session to do its job (index.ts supplies it). */
@@ -50,7 +50,7 @@ export interface ProcessResult {
   changed: boolean;
 }
 
-/** An action signal the orchestrator must be told about (routing matrix §5). */
+/** An action signal the orchestrator must be told about. */
 export function needsAttention(event: MaestroEvent): boolean {
   return event.to === ORCHESTRATOR_ID && isSignalType(event.type) && event.type !== "progress";
 }
@@ -70,9 +70,9 @@ export class SignalFeed {
   attach(runtime: MaestroRuntime | null): void {
     if (this.attached) return;
     this.attached = true;
+    this.runtime = runtime;
     this.unsubs.push(onEventAppended(() => void this.handleAppend()));
-    this.unsubs.push(onRuntimeReady((r) => void this.handleRuntimeReady(r)));
-    if (runtime) void this.handleRuntimeReady(runtime);
+    if (runtime) this.chain = this.chain.then(() => this.startup(runtime));
   }
 
   detach(): void {
@@ -102,16 +102,8 @@ export class SignalFeed {
     });
   }
 
-  /** Runtime came up after explicit activation: reconcile + replay unconsumed. */
-  private handleRuntimeReady(runtime: MaestroRuntime): void {
-    this.runtime = runtime;
-    this.chain = this.chain.then(async () => {
-      await this.startup(runtime);
-    });
-  }
-
   /**
-   * Startup pass (§11 reconcile-on-startup):
+   * Startup pass (reconcile on startup):
    * 1. mark agents whose process isn't alive as `interrupted`;
    * 2. surface signals past the watermark as cards; action signals queue for
    *    next-turn injection (no auto-wake at startup — avoids racing pi's own
@@ -126,7 +118,7 @@ export class SignalFeed {
   /**
    * Walk agents.json; non-terminal statuses that imply a live embedded
    * session in the previous process → `interrupted` (embedded children die
-   * with the orchestrator, §11). A `running` specialist had in-flight work; a
+   * with the orchestrator. A `running` specialist had in-flight work; a
    * `blocked` one was mid-task waiting for an answer — neither has a live
    * session anymore, so both must be re-attached. Terminal states (`done` /
    * `stopped`) stay as the orchestrator left them.
@@ -166,14 +158,14 @@ export class SignalFeed {
       // before_agent_start drain) can't make this loop double-handle an entry.
       if (event.sequence > consumers.getCursor(UI_CONSUMER_ID)) {
         if (event.type === "progress") {
-          // Progress is live status (footer), not a card (§4): advance the
+          // Progress is live status (footer), not a card; advance the
           // render cursor so the re-scan never re-delivers it, but never
           // append it to the session. Action signals + commands render cards.
           consumers.setCursor(UI_CONSUMER_ID, event.sequence);
           changed = true;
         } else {
           const cardOk = await this.safe(() => this.sink.onCard(event));
-          if (cardOk.ok) {
+          if (cardOk) {
             consumers.setCursor(UI_CONSUMER_ID, event.sequence);
             changed = true;
           }
@@ -192,7 +184,7 @@ export class SignalFeed {
           }
           if (wake && this.sink.canWake()) {
             const delivered = await this.safe(() => this.sink.onWake(event));
-            if (delivered.ok) {
+            if (delivered) {
               runtime.consumedSignals.add(event.eventId);
               await this.safe(() => applySignalStatus(runtime, event));
               consumers.setCursor(ORCHESTRATOR_ID, event.sequence);
@@ -229,11 +221,12 @@ export class SignalFeed {
     }
   }
 
-  private async safe<T>(fn: () => T | Promise<T>): Promise<{ ok: true; value: T } | { ok: false }> {
+  private async safe(fn: () => unknown | Promise<unknown>): Promise<boolean> {
     try {
-      return { ok: true, value: await fn() };
+      await fn();
+      return true;
     } catch {
-      return { ok: false };
+      return false;
     }
   }
 }

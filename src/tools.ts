@@ -1,13 +1,13 @@
 /**
- * Maestro tools (§6) — orchestrator toolset + the child's single tool.
+ * Maestro tools — orchestrator toolset plus the child's single tool.
  *
  * Orchestrator session: the full set below.
  * Child session (embedded): exactly one maestro tool — `maestro_signal`
- * (plus the standard coding tools so it can actually work, §8/§11).
+ * plus the standard coding tools so it can actually work.
  */
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   DEFAULT_MAX_BYTES,
@@ -28,6 +28,8 @@ import {
   type RegistryAgent,
 } from "./types.ts";
 import { TaskStore, readBlueprint, resolveArtifact } from "./task-store.ts";
+import { writeAtomic } from "./persistence.ts";
+import { assertRealPathInside, safeRelativePath, assertIdentifier } from "./paths.ts";
 import { builtinBlueprint, listBlueprintNames } from "./blueprints.ts";
 import { ensureRuntime, getRuntime, type MaestroRuntime } from "./runtime.ts";
 import { buildSpawnPrompt, createChildSession, type ChildSessionHandle } from "./child-session.ts";
@@ -53,7 +55,7 @@ function textContent(message: { content?: unknown }): string {
 }
 
 function resolveModel(ctx: ExtensionContext, modelParam?: string): Model<any> | undefined {
-  if (!modelParam) return ctx.model; // inherit the orchestrator's model settings (§11)
+  if (!modelParam) return ctx.model; // inherit the orchestrator's model settings
   const idx = modelParam.indexOf("/");
   if (idx <= 0 || idx === modelParam.length - 1) {
     const found = ctx.modelRegistry.getAvailable().find((m) => m.id === modelParam);
@@ -90,7 +92,7 @@ function renderSignal(e: MaestroEvent): string {
 }
 
 /**
- * Shared status rendering for maestro_status and `/maestro status` (§6):
+ * Shared status rendering for maestro_status and `/maestro status`:
  * agents + orchestrator watermark + pending signals past the watermark.
  */
 async function renderStatus(runtime: MaestroRuntime): Promise<{
@@ -127,7 +129,7 @@ function renderTimelineLine(e: MaestroEvent): string {
 
 /** Build the full orchestrator toolset (callable by the LLM or tests). */
 export function buildOrchestratorTools(): ToolDefinition[] {
-  // maestro_init(task?) — create the Task Store (§3, §6, §10).
+  // maestro_init(task?) — create or resume the Task Store.
   const maestroInit = defineTool({
     name: "maestro_init",
     label: "Maestro Init",
@@ -160,7 +162,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     },
   });
 
-  // maestro_define_role(name, blueprint) — author a reusable role (§6, §9).
+  // maestro_define_role(name, blueprint) — author a reusable role.
   const maestroDefineRole = defineTool({
     name: "maestro_define_role",
     label: "Maestro Define Role",
@@ -182,12 +184,13 @@ export function buildOrchestratorTools(): ToolDefinition[] {
         throw new Error(`Invalid role name: "${name}" (letters, digits, - and _ only)`);
       }
       const body = params.blueprint.trim();
+      if (!body || body.length > 100_000) throw new Error("Blueprint must be between 1 and 100000 characters");
       const content = body.startsWith("---\n")
         ? body
         : `---\nname: ${name}\n---\n\n${body}`;
       const file = join(runtime.store.blueprintsDir, `${name}.md`);
       await mkdir(runtime.store.blueprintsDir, { recursive: true });
-      await writeFile(file, content, "utf8");
+      await writeAtomic(file, content);
       return {
         content: [{ type: "text", text: `Role blueprint saved: agents/${name}.md` }],
         details: { role: name, path: file },
@@ -195,7 +198,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     },
   });
 
-  // maestro_spawn(role, task, model?, scope?) — register + start a specialist (§6, §8, §9).
+  // maestro_spawn(role, task, model?, scope?) — register and start a specialist.
   const maestroSpawn = defineTool({
     name: "maestro_spawn",
     label: "Maestro Spawn",
@@ -235,7 +238,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
       const runtime = await ensureRuntime(ctx.cwd);
       const { store, log, registry, config } = runtime;
 
-      // Blueprint: built-in or user-authored (§9).
+      // Blueprint: built-in or user-authored.
       let blueprint = (await readBlueprint(store, params.role)) ?? builtinBlueprint(params.role);
       if (!blueprint) {
         const builtins = listBlueprintNames().join(", ");
@@ -244,7 +247,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
         );
       }
 
-      // Unique id + scope ownership (§8 rule 4): an explicit name (e.g.
+      // Unique id + scope ownership: an explicit name (e.g.
       // charles with role qa) or the role-derived `<role>-N` when unnamed.
       const agentId = registry.nextAgentId(params.role, params.name);
       const scope = (params.scope ?? []).map((s) => s.trim()).filter(Boolean);
@@ -254,7 +257,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
           `Scope overlap with an existing agent: ${overlap.join(", ")}. Assign disjoint files/modules or reuse the owning specialist.`,
         );
       }
-      // "Sequential" constrains *activity*, not object count (§11). A child is
+      // "Sequential" constrains *activity*, not object count. A child is
       // "active" only while it is generating AND has un-finished work: a
       // command (spawn/send/reply/forward/resume) since its last
       // finished/error/needs_input boundary. A child that just emitted
@@ -283,7 +286,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
         );
       }
 
-      // Model + thinking level: explicit or inherited (§11).
+      // Model + thinking level: explicit or inherited.
       const model = resolveModel(ctx, params.model);
       const modelLabel = model ? `${model.provider}/${model.id}` : "inherit";
       const thinkingLevel = ctx.thinkingLevel;
@@ -303,7 +306,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
       });
       runtime.children.set(agentId, handle);
 
-      // Registry bookkeeping (§3).
+      // Registry bookkeeping.
       registry.addAgent({
         id: agentId,
         role: params.role,
@@ -316,13 +319,13 @@ export function buildOrchestratorTools(): ToolDefinition[] {
       });
       await registry.persist(store);
 
-      // Field-notes stub (§8): the specialist appends as it works (things
+      // Field-notes stub: the specialist appends as it works (things
       // learned, architecture notes, pitfalls, useful commands). Created at
       // spawn so the orchestrator's tail reads always resolve and the stub
       // rides into the spawn prompt's field-notes section.
       await store.createFieldNotes(agentId, params.role);
 
-      // Spawn command lands in the same log as events (§5) — before the
+      // Spawn command lands in the same log as events — before the
       // child's run starts, so log order is deterministic.
       await log.append({
         from: ORCHESTRATOR_ID,
@@ -359,13 +362,13 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     },
   });
 
-  // maestro_status() — agents + pending signals past the watermark (§6).
+  // maestro_status — agents and pending signals past the watermark.
   const maestroStatus = defineTool({
     name: "maestro_status",
     label: "Maestro Status",
     description:
       "List specialists: role, status (running/idle/blocked/done/stopped/interrupted), scope, " +
-      "and any pending signals (events past the orchestrator's watermark, §5).",
+      "and any pending signals (events past the orchestrator's watermark).",
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       const runtime = await ensureRuntime(ctx.cwd);
@@ -377,7 +380,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     },
   });
 
-  // maestro_read_transcript(agentId, {tail?}) — read any specialist's session file (§6, §11).
+  // maestro_read_transcript(agentId, {tail?}) — read any specialist's session file.
   const maestroReadTranscript = defineTool({
     name: "maestro_read_transcript",
     label: "Maestro Read Transcript",
@@ -394,7 +397,8 @@ export function buildOrchestratorTools(): ToolDefinition[] {
       const runtime = await ensureRuntime(ctx.cwd);
       const agent = runtime.registry.getAgent(params.agentId);
       if (!agent) throw new Error(`Unknown agent: ${params.agentId}`);
-      const raw = await readFile(agent.sessionFile, "utf8");
+      const transcript = await assertRealPathInside(runtime.store.sessionsDir, agent.sessionFile, "Transcript");
+      const raw = await readFile(transcript, "utf8");
       const lines = raw.split("\n").filter(Boolean);
       const tail = params.tail ?? 40;
       const slice = lines.slice(Math.max(0, lines.length - tail));
@@ -439,14 +443,14 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     },
   });
 
-  // maestro_read_field_notes(agentId, {tail?}) — read a specialist's notebook tail (§8).
+  // maestro_read_field_notes(agentId, {tail?}) — read a specialist's notebook tail.
   const maestroReadFieldNotes = defineTool({
     name: "maestro_read_field_notes",
     label: "Maestro Read Field Notes",
     description:
       "Read a specialist's field notes (field-notes/<agentId>.md — its in-the-moment notebook: " +
       "things learned, architecture notes, pitfalls, useful commands). Reads a tail (last N lines, " +
-      "byte-capped) to protect orchestrator context — never whole histories (§8).",
+      "byte-capped) to protect orchestrator context — never whole histories.",
     parameters: Type.Object({
       agentId: Type.String({ description: "Agent id (e.g. impl-1)" }),
       tail: Type.Optional(
@@ -457,7 +461,8 @@ export function buildOrchestratorTools(): ToolDefinition[] {
       const runtime = await ensureRuntime(ctx.cwd);
       const agent = runtime.registry.getAgent(params.agentId);
       if (!agent) throw new Error(`Unknown agent: ${params.agentId}`);
-      const file = join(runtime.store.fieldNotesDir, `${params.agentId}.md`);
+      assertIdentifier(params.agentId, "agent id");
+      const file = safeRelativePath(runtime.store.fieldNotesDir, `${params.agentId}.md`, "Field notes path");
       const raw = await readFile(file, "utf8").catch(() => "");
       const lines = raw.split("\n").filter(Boolean);
       const tail = params.tail ?? 40;
@@ -480,7 +485,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     },
   });
 
-  // maestro_read_artifact(agentId?, path) — read artifacts produced by agents (§6).
+  // maestro_read_artifact(agentId?, path) — read artifacts produced by agents .
   const maestroReadArtifact = defineTool({
     name: "maestro_read_artifact",
     label: "Maestro Read Artifact",
@@ -493,7 +498,8 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const runtime = await ensureRuntime(ctx.cwd);
       const file = resolveArtifact(runtime.store, params.path);
-      const raw = await readFile(file, "utf8");
+      const safeFile = await assertRealPathInside(runtime.store.artifactsDir, file, "Artifact path");
+      const raw = await readFile(safeFile, "utf8");
       const truncated = truncateHead(raw, { maxBytes: DEFAULT_MAX_BYTES });
       let note = "";
       if (truncated.truncated) {
@@ -506,7 +512,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     },
   });
 
-  // maestro_history(agentId?, ticket?, {tail?}) — the audit view of the event log (§6).
+  // maestro_history(agentId?, ticket?, {tail?}) — the audit view of the event log .
   // Sequence-ordered timeline of the complete conversation (events + commands),
   // optionally filtered by agent (either direction) or ticket, with a tail limit.
   const maestroHistory = defineTool({
@@ -573,7 +579,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     },
   });
 
-  // maestro_reply(agentId, replyTo, message) — answer a needs_input / unblock (§5, §6).
+  // maestro_reply(agentId, replyTo, message) — answer a needs_input / unblock.
   const maestroReply = defineTool({
     name: "maestro_reply",
     label: "Maestro Reply",
@@ -607,7 +613,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     },
   });
 
-  // maestro_send(agentId, message, {forward?}) — instructions / sibling relay (§5, §6).
+  // maestro_send(agentId, message, {forward?}) — instructions or sibling relay.
   const maestroSend = defineTool({
     name: "maestro_send",
     label: "Maestro Send",
@@ -644,7 +650,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     },
   });
 
-  // maestro_await(agentId, {timeout}) — wait for the next actionable signal (§6).
+  // maestro_await(agentId, {timeout}) — wait for the next actionable signal .
   const maestroAwait = defineTool({
     name: "maestro_await",
     label: "Maestro Await",
@@ -680,7 +686,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     },
   });
 
-  // maestro_stop(agentId) — terminate a run, registry → stopped (§6, §11).
+  // maestro_stop(agentId) — terminate a run and mark it stopped.
   const maestroStop = defineTool({
     name: "maestro_stop",
     label: "Maestro Stop",
@@ -705,7 +711,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     },
   });
 
-  // maestro_resume(agentId) — fresh embedded session from the transcript (§11).
+  // maestro_resume(agentId) — fresh embedded session from the transcript .
   const maestroResume = defineTool({
     name: "maestro_resume",
     label: "Maestro Resume",
@@ -805,7 +811,7 @@ export function makeMaestroSignalTool(agentId: string): ToolDefinition {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       let runtime: MaestroRuntime | null = getRuntime();
       if (!runtime) runtime = await ensureRuntime(ctx.cwd); // RPC transport fallback
-      // Signals from a stopped agent are ignored until it is explicitly resumed (§6, §11).
+      // Signals from a stopped agent are ignored until it is explicitly resumed.
       if (runtime.registry.getAgent(agentId)?.status === "stopped") {
         return {
           content: [

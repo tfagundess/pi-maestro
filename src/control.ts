@@ -1,5 +1,5 @@
 /**
- * Phase 3 — Answering & control (§5, §6, §7, §11).
+ * Answering and control.
  *
  * The orchestrator's command surface: reply / send / forward / stop / resume /
  * await. Every command is recorded in the SAME events.jsonl as events — the
@@ -10,7 +10,6 @@
  * live (interrupted / stopped) simply receives the command on resume.
  */
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -19,9 +18,10 @@ import { onEventAppended } from "./events.ts";
 import type { MaestroRuntime } from "./runtime.ts";
 import { buildResumePrompt, createChildSession, type ChildSessionHandle } from "./child-session.ts";
 import { readBlueprint } from "./task-store.ts";
+import { assertRealPathInside, safeRelativePath } from "./paths.ts";
 import { builtinBlueprint } from "./blueprints.ts";
 
-// ── delivery into the child's turn loop (§14) ──────────────────────────────
+// ── delivery into the child's turn loop ───────────────────────────────
 
 /**
  * Deliver a message to a specialist. Streaming → `steer` (queued at the next
@@ -34,7 +34,7 @@ export function deliverToChild(runtime: MaestroRuntime, agentId: string, text: s
   if (!handle) return false;
 
   const fail = (err: unknown): void => {
-    // A stopped agent's signals are ignored (§6) — including delivery errors.
+    // A stopped agent's signals are ignored — including delivery errors.
     if (runtime.registry.getAgent(agentId)?.status === "stopped") return;
     const message = err instanceof Error ? err.message : String(err);
     void runtime.log
@@ -105,7 +105,7 @@ export async function replyToAgent(
 /**
  * `maestro_send(agentId, message, {forward?})` — send instructions; with
  * `forward: true` the command is recorded as a `forward` (relaying a sibling
- * agent's message, §5/§6).
+ * agent's message.
  */
 export async function sendToAgent(
   runtime: MaestroRuntime,
@@ -135,7 +135,7 @@ export async function sendToAgent(
  * `maestro_stop(agentId)` — registry → `stopped`, terminate the run (abort
  * in-flight generation where the platform allows; otherwise the run ends at
  * the next signal boundary). Signals from a stopped agent are ignored until
- * it is explicitly resumed (§6, §11).
+ * it is explicitly resumed.
  */
 export async function stopAgent(
   runtime: MaestroRuntime,
@@ -192,7 +192,7 @@ export interface ResumeOptions {
 /**
  * `maestro_resume(agentId)` — fresh embedded session loaded from the agent's
  * transcript (`SessionManager.open(sessionFile)`), prompted with the field
- * notes + "continue from your transcript". Registry → `running` (§11).
+ * notes + "continue from your transcript". Registry becomes `running`.
  */
 export async function resumeAgent(
   runtime: MaestroRuntime,
@@ -214,7 +214,8 @@ export async function resumeAgent(
 
   const blueprint =
     (await readBlueprint(runtime.store, agent.role)) ?? builtinBlueprint(agent.role) ?? "";
-  const fieldNotes = await readFile(join(runtime.store.fieldNotesDir, `${agentId}.md`), "utf8").catch(() => "");
+  const fieldNotesPath = safeRelativePath(runtime.store.fieldNotesDir, `${agentId}.md`, "Field notes path");
+  const fieldNotes = await readFile(fieldNotesPath, "utf8").catch(() => "");
   const prompt = await buildResumePrompt({
     store: runtime.store,
     agentId,
@@ -223,6 +224,7 @@ export async function resumeAgent(
     fieldNotes,
   });
 
+  const sessionFile = await assertRealPathInside(runtime.store.sessionsDir, agent.sessionFile, "Session");
   const handle = await createChildSession({
     store: runtime.store,
     agentId,
@@ -234,7 +236,7 @@ export async function resumeAgent(
     model: opts.model,
     thinkingLevel: opts.thinkingLevel,
     cwd: opts.cwd,
-    sessionFile: agent.sessionFile,
+    sessionFile,
   });
   runtime.children.set(agentId, handle);
 
@@ -245,7 +247,7 @@ export async function resumeAgent(
   return { event, agentId, sessionFile: handle.sessionFile, status: "running" };
 }
 
-/** Options for autoResumeInterrupted (the autoResume policy, §8). */
+/** Options for autoResumeInterrupted. */
 export interface AutoResumeOptions {
   cwd: string;
   thinkingLevel?: ThinkingLevel;
@@ -256,7 +258,7 @@ export interface AutoResumeOptions {
 }
 
 /**
- * Policy `autoResume` (§8): when config.autoResume is true, explicit Maestro
+ * Policy `autoResume`: when config.autoResume is true, explicit Maestro
  * activation re-attaches interrupted specialists automatically — fresh embedded sessions
  * from their transcripts, no asking. When false (default) it is a no-op and
  * the orchestrator decides on its next turn (the pending injection surfaces
@@ -287,7 +289,7 @@ export async function autoResumeInterrupted(
   return resumed;
 }
 
-// ── maestro_await (§6) ─────────────────────────────────────────────────────
+// ── maestro_await  ─────────────────────────────────────────────────────
 
 export interface AwaitResult {
   status: "signal" | "timeout" | "idle" | "stopped" | "interrupted" | "missing";
@@ -313,7 +315,7 @@ async function markConsumed(runtime: MaestroRuntime, event: MaestroEvent): Promi
 }
 
 /**
- * Registry status follows what the orchestrator has *consumed* (§3: the
+ * Registry status follows what the orchestrator has *consumed*: the
  * registry owns status): a `finished`/`error` specialist is `idle` (alive,
  * available for follow-ups — reuse before respawn), a `needs_input` one is
  * `blocked` (waiting for an answer). Lifecycle statuses (`interrupted` /
@@ -375,7 +377,7 @@ export function awaitAgent(runtime: MaestroRuntime, agentId: string, timeoutMs: 
     };
 
     // Subscribe FIRST, then cross-check — no gap for a signal to slip in
-    // between the log read and the subscription (§6 cross-check path).
+    // between the log read and the subscription (cross-check path).
     unsub = onEventAppended((event) => {
       if (!isActionSignal(event, agentId)) return;
       void markConsumed(runtime, event).finally(() =>
