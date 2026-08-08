@@ -38,6 +38,39 @@ function runPi(cwd: string, args: string[], extraEnv: Record<string, string> = {
   });
 }
 
+function startPi(cwd: string, args: string[], extraEnv: Record<string, string> = {}) {
+  const env = { ...process.env, ...extraEnv };
+  delete env.PI_OFFLINE;
+  const child = spawn("pi", ["--thinking", "off", ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => (stdout += chunk));
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("exit", (code, signal) => resolve({ code, signal }));
+  });
+  return { child, exited, output: () => ({ stdout, stderr }) };
+}
+
+async function waitForRunning(store: string, process: ReturnType<typeof startPi>, timeout = 60_000): Promise<void> {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (process.child.exitCode !== null) {
+      const output = process.output();
+      throw new Error(`Pi exited before SIGKILL setup\\n${output.stdout}\\n${output.stderr}`);
+    }
+    try {
+      const registry = JSON.parse(await readFile(join(store, "agents.json"), "utf8"));
+      if (registry.agents["qa-1"]?.status === "running") return;
+    } catch {
+      // The store is created asynchronously during activation.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Timed out waiting for qa-1 to become running");
+}
+
 test(
   "DeepSeek V4 Flash simulates an orchestrator workflow through Maestro tools",
   { skip: process.env.LIVE_TESTS !== "1" },
@@ -153,5 +186,69 @@ test(
       .filter(Boolean)
       .map((line) => JSON.parse(line));
     assert.equal(afterRpc.some((event) => event.type === "error" && event.from === "qa-1"), true);
+  },
+);
+
+test(
+  "SIGKILL recovery reconciles a running specialist after the parent dies",
+  { skip: process.env.LIVE_TESTS !== "1" },
+  async () => {
+    const cwd = join(temp, "sigkill");
+    await mkdir(cwd, { recursive: true });
+    const store = join(cwd, ".pi", "maestro", "sigkill-test");
+    const process = startPi(cwd, [
+      "--no-session",
+      "--no-skills",
+      "--no-context-files",
+      "--no-builtin-tools",
+      "--mode",
+      "json",
+      "--provider",
+      "opencode-go",
+      "--model",
+      "deepseek-v4-flash",
+      "--extension",
+      extension,
+      "--print",
+      "/maestro init sigkill-test",
+      "Use actual Maestro tools: define role qa, then spawn qa-1 with task 'Do not call maestro_signal. Stay active and keep working for a long time.' and scope ['tests/sigkill']. Then await qa-1 with timeout 120. Do not provide a final response until the await returns.",
+    ]);
+
+    try {
+      await waitForRunning(store, process);
+      process.child.kill("SIGKILL");
+      const exit = await process.exited;
+      assert.equal(exit.signal, "SIGKILL");
+
+      const recoveryOutput = await runPi(cwd, [
+        "--no-session",
+        "--no-skills",
+        "--no-context-files",
+        "--no-builtin-tools",
+        "--mode",
+        "json",
+        "--provider",
+        "opencode-go",
+        "--model",
+        "deepseek-v4-flash",
+        "--extension",
+        extension,
+        "--print",
+        "/maestro init sigkill-test",
+        "Call maestro_status, then reply with exactly SIGKILL_RECOVERED.",
+      ]);
+
+      const registry = JSON.parse(await readFile(join(store, "agents.json"), "utf8"));
+      const events = (await readFile(join(store, "events.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      assert.equal(registry.agents["qa-1"].status, "interrupted");
+      assert.equal(events.some((event) => event.type === "spawn" && event.to === "qa-1"), true);
+      assert.equal(recoveryOutput.includes("SIGKILL_RECOVERED"), true);
+    } finally {
+      if (process.child.exitCode === null) process.child.kill("SIGKILL");
+    }
   },
 );
