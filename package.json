@@ -1,6 +1,6 @@
 {
   "name": "pi-maestro",
-  "version": "1.0.1",
+  "version": "1.1",
   "type": "module",
   "description": "Multi-agent orchestrator for pi: a shared task store, named specialists, and durable child sessions that plan, build, and verify work.",
   "keywords": ["pi-package"],
