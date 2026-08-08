@@ -168,6 +168,7 @@ import maestro from ${JSON.stringify(extension)};
 import { buildOrchestratorTools, makeMaestroSignalTool } from ${JSON.stringify(join(root, "src", "tools.ts"))};
 import { EventLog } from ${JSON.stringify(join(root, "src", "events.ts"))};
 import { ensureRuntime, getRuntime } from ${JSON.stringify(join(root, "src", "runtime.ts"))};
+import { awaitAgent } from ${JSON.stringify(join(root, "src", "control.ts"))};
 import { SignalFeed } from ${JSON.stringify(join(root, "src", "feed.ts"))};
 import { buildOrchestratorContext, registerMaestroCards } from ${JSON.stringify(join(root, "src", "ui.ts"))};
 
@@ -190,7 +191,7 @@ export default function (pi) {
         payload: { summary: "concurrent-" + i },
       })));
       const rawBeforeMalformed = await readFile(runtime.store.eventsPath, "utf8");
-      await writeFile(runtime.store.eventsPath, rawBeforeMalformed + "{malformed\\n", "utf8");
+      await writeFile(runtime.store.eventsPath, rawBeforeMalformed + "{malformed\\n" + JSON.stringify({ eventId: "bad", sequence: 999, type: "progress" }) + "\\n", "utf8");
       const recoveredLog = await EventLog.load(runtime.store);
       const recovered = await recoveredLog.append({
         from: "qa-1",
@@ -214,6 +215,8 @@ export default function (pi) {
       await writeFile(join(ctx.cwd, "outside.md"), "outside\\n", "utf8");
       await symlink(join(ctx.cwd, "outside.md"), join(runtime.store.artifactsDir, "outside-link.md"));
       const invalidRole = await call("maestro_define_role", { name: "bad/name", blueprint: "invalid" })
+        .then(() => "no error", (error) => error.message);
+      const longRole = await call("maestro_define_role", { name: "a".repeat(129), blueprint: "invalid" })
         .then(() => "no error", (error) => error.message);
       const scopeOverlap = await call("maestro_spawn", { role: "qa", task: "blocked", scope: ["tests"] })
         .then(() => "no error", (error) => error.message);
@@ -258,6 +261,11 @@ export default function (pi) {
         replyTo: needsInput.details.eventId,
         message: "Approved; continue.",
       });
+      const invalidReply = await call("maestro_reply", {
+        agentId: "qa-1",
+        replyTo: progress.details.eventId,
+        message: "This must be rejected.",
+      }).then(() => "no error", (error) => error.message);
       const send = await call("maestro_send", {
         agentId: "qa-1",
         message: "Run the next check.",
@@ -282,6 +290,22 @@ export default function (pi) {
       const duplicateResume = await call("maestro_resume", { agentId: "qa-1" })
         .then(() => "no error", (error) => error.message);
       const idleAfterRun = await call("maestro_await", { agentId: "qa-1", timeout: 5 });
+      runtime.children.set("qa-1", {
+        agentId: "qa-1",
+        sessionFile: join(ctx.cwd, "qa-session.jsonl"),
+        session: { isStreaming: true, steer: async () => {}, abort: async () => {} },
+        dispose: () => {},
+      });
+      const awaitRace = await Promise.all([
+        awaitAgent(runtime, "qa-1", 2_000),
+        signal.execute("race-finished", { type: "finished", payload: { summary: "First race signal" } }, undefined, () => {}, ctx),
+        signal.execute("race-error", { type: "error", payload: { summary: "Second race signal" } }, undefined, () => {}, ctx),
+      ]);
+      await feed.settled();
+      const raceResult = awaitRace[0];
+      const raceEvents = await runtime.log.read(0);
+      const secondRaceEvent = raceEvents.find((event) => event.payload.summary === "Second race signal");
+      const cursorAfterRace = runtime.consumers.getCursor("orchestrator");
       runtime.registry.addAgent({
         id: "qa-3",
         role: "qa",
@@ -331,7 +355,7 @@ export default function (pi) {
       const status = await call("maestro_status", {});
       const history = await call("maestro_history", { agentId: "qa-1", tail: 20 });
       feed.detach();
-      const results = { init, progress, needsInput, awaited, reply, send, artifact, failedSend, errorSignal, duplicateResume, idleAfterRun, resumeRace, resumeRaceEvents, streamingSend, timedOut, streamingStop, aborted, stop, ignored, status, history, feed: feedSeen, contextAfterError, invalidRole, scopeOverlap, badArtifact, badWindowsArtifact, symlinkArtifact, concurrent, recovered, recoveredEvents, renderedCard: Boolean(renderedCard), renderedFrame };
+      const results = { init, progress, needsInput, awaited, reply, invalidReply, send, artifact, failedSend, errorSignal, awaitRace: raceResult, secondRaceEvent, cursorAfterRace, duplicateResume, idleAfterRun, resumeRace, resumeRaceEvents, streamingSend, timedOut, streamingStop, aborted, stop, ignored, status, history, feed: feedSeen, contextAfterError, invalidRole, longRole, scopeOverlap, badArtifact, badWindowsArtifact, symlinkArtifact, concurrent, recovered, recoveredEvents, renderedCard: Boolean(renderedCard), renderedFrame };
       await writeFile(join(ctx.cwd, "tool-results.json"), JSON.stringify(results, null, 2));
     },
   });
@@ -346,10 +370,16 @@ export default function (pi) {
   assert.match(results.init.content[0].text, /Task store created: workflow/);
   assert.equal(new Set(results.concurrent.map((event) => event.sequence)).size, 8);
   assert.equal(results.recoveredEvents.some((event) => event.payload.summary === "recovered"), true);
+  assert.equal(results.recoveredEvents.some((event) => event.eventId === "bad"), false);
   assert.equal(results.renderedCard, true);
   assert.match(results.renderedFrame, /Need approval/);
   assert.match(results.renderedFrame, /Details/);
   assert.match(results.invalidRole, /Invalid role name/);
+  assert.match(results.longRole, /1-128/);
+  assert.match(results.invalidReply, /needs_input signal/);
+  assert.equal(results.awaitRace.status, "signal");
+  assert.equal(results.cursorAfterRace, results.awaitRace.event.sequence);
+  assert.ok(results.secondRaceEvent.sequence > results.cursorAfterRace);
   assert.match(results.scopeOverlap, /Scope overlap/);
   assert.match(results.badArtifact, /escapes the artifacts dir/);
   assert.match(results.badWindowsArtifact, /escapes the artifacts dir/);

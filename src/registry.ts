@@ -96,6 +96,10 @@ export class Registry {
     this.data.agents[agent.id] = agent;
   }
 
+  deleteAgent(id: string): void {
+    delete this.data.agents[id];
+  }
+
   setStatus(id: string, status: RegistryAgent["status"]): void {
     const agent = this.data.agents[id];
     if (agent) agent.status = status;

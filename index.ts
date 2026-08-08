@@ -80,14 +80,16 @@ export default function (pi: ExtensionAPI): void {
         options,
       );
     },
-    onStatusChanged: () => {
-      if (activeCtx) void refreshFooter(activeCtx, getRuntime());
-    },
+    onStatusChanged: () => activeCtx ? refreshFooter(activeCtx, getRuntime()) : undefined,
   };
 
   pi.on("session_start", async (_event, ctx) => {
     // Existing task stores are data, not activation state. A new Pi session
     // stays dormant until the user explicitly runs `/maestro init`.
+    const currentFeed = feed;
+    currentFeed?.detach();
+    await currentFeed?.settled().catch(() => {});
+    await teardownRuntime();
     activated = false;
     personaArmed = false;
     activeCtx = null;
@@ -97,7 +99,9 @@ export default function (pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", async () => {
-    feed?.detach();
+    const currentFeed = feed;
+    currentFeed?.detach();
+    await currentFeed?.settled().catch(() => {});
     feed = null;
     activeCtx = null;
     activated = false;

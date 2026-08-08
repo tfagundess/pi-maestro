@@ -42,7 +42,7 @@ export interface FeedSink {
   /** Wake the orchestrator LLM with this signal's content (best-effort; per policy). */
   onWake(event: MaestroEvent): void;
   /** Refresh the footer / status line after a batch. */
-  onStatusChanged(): void;
+  onStatusChanged(): void | Promise<void>;
 }
 
 export interface ProcessResult {
@@ -57,6 +57,7 @@ export function needsAttention(event: MaestroEvent): boolean {
 
 export class SignalFeed {
   private chain: Promise<unknown> = Promise.resolve();
+  private generation = 0;
   private attached = false;
   private runtime: MaestroRuntime | null = null;
   private unsubs: (() => void)[] = [];
@@ -69,13 +70,21 @@ export class SignalFeed {
    */
   attach(runtime: MaestroRuntime | null): void {
     if (this.attached) return;
+    const generation = ++this.generation;
     this.attached = true;
     this.runtime = runtime;
-    this.unsubs.push(onEventAppended(() => void this.handleAppend()));
-    if (runtime) this.chain = this.chain.then(() => this.startup(runtime));
+    this.chain = this.chain.catch(() => {});
+    this.unsubs.push(onEventAppended(() => void this.handleAppend(generation)));
+    if (runtime) {
+      this.chain = this.chain.then(() => {
+        if (this.generation !== generation || !this.attached) return;
+        return this.startup(runtime);
+      });
+    }
   }
 
   detach(): void {
+    this.generation += 1;
     for (const unsub of this.unsubs) unsub();
     this.unsubs = [];
     this.attached = false;
@@ -88,10 +97,11 @@ export class SignalFeed {
   }
 
   /** Notification path: an event landed. Process the log past the cursors (wake allowed), then refresh the live footer/status line. */
-  private handleAppend(): void {
+  private handleAppend(generation: number): void {
     const runtime = this.runtime ?? getRuntime();
-    if (!runtime) return;
+    if (!runtime || generation !== this.generation || !this.attached) return;
     this.chain = this.chain.then(async () => {
+      if (generation !== this.generation || !this.attached) return;
       const result = await this.processPending(runtime, { wake: true });
       // Footer is live state (registry statuses, phase, tickets) — refresh it
       // after every batch that actually moved something (spawn commands,
@@ -99,7 +109,7 @@ export class SignalFeed {
       if (result.changed) {
         await this.safe(() => this.sink.onStatusChanged());
       }
-    });
+    }).catch(() => {});
   }
 
   /**
@@ -215,7 +225,7 @@ export class SignalFeed {
 
   private queueAttention(runtime: MaestroRuntime, event: MaestroEvent): void {
     runtime.consumedSignals.add(event.eventId);
-    void applySignalStatus(runtime, event);
+    void applySignalStatus(runtime, event).catch(() => {});
     if (!runtime.attention.some((a) => a.eventId === event.eventId)) {
       runtime.attention.push(event);
     }

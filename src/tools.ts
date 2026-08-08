@@ -29,9 +29,9 @@ import {
 } from "./types.ts";
 import { TaskStore, readBlueprint, resolveArtifact } from "./task-store.ts";
 import { writeAtomic } from "./persistence.ts";
-import { assertRealPathInside, safeRelativePath, assertIdentifier } from "./paths.ts";
+import { assertRealPathInside, safeRelativePath, assertIdentifier, validIdentifier } from "./paths.ts";
 import { builtinBlueprint, listBlueprintNames } from "./blueprints.ts";
-import { ensureRuntime, getRuntime, type MaestroRuntime } from "./runtime.ts";
+import { ensureRuntime, getRuntime, withLifecycleLock, type MaestroRuntime } from "./runtime.ts";
 import { buildSpawnPrompt, createChildSession, type ChildSessionHandle } from "./child-session.ts";
 import { awaitAgent, replyToAgent, resumeAgent, sendToAgent, stopAgent } from "./control.ts";
 
@@ -180,8 +180,8 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const runtime = await ensureRuntime(ctx.cwd);
       const name = params.name.trim();
-      if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name)) {
-        throw new Error(`Invalid role name: "${name}" (letters, digits, - and _ only)`);
+      if (!validIdentifier(name)) {
+        throw new Error(`Invalid role name: "${name}" (1-128 letters, digits, - and _ only)`);
       }
       const body = params.blueprint.trim();
       if (!body || body.length > 100_000) throw new Error("Blueprint must be between 1 and 100000 characters");
@@ -236,6 +236,7 @@ export function buildOrchestratorTools(): ToolDefinition[] {
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const runtime = await ensureRuntime(ctx.cwd);
+      return withLifecycleLock(runtime, async () => {
       const { store, log, registry, config } = runtime;
 
       // Blueprint: built-in or user-authored.
@@ -292,58 +293,58 @@ export function buildOrchestratorTools(): ToolDefinition[] {
       const thinkingLevel = ctx.thinkingLevel;
 
       const signalTool = makeMaestroSignalTool(agentId);
-      const handle: ChildSessionHandle = await createChildSession({
-        store,
-        agentId,
-        role: params.role,
-        blueprint,
-        task: params.task,
-        log,
-        signalTool,
-        model,
-        thinkingLevel,
-        cwd: ctx.cwd,
-      });
-      runtime.children.set(agentId, handle);
+      let handle: ChildSessionHandle | undefined;
+      try {
+        // Build all child input before publishing the agent as running.
+        await store.createFieldNotes(agentId, params.role);
+        const prompt = await buildSpawnPrompt({ store, agentId, role: params.role, blueprint, task: params.task });
+        handle = await createChildSession({
+          store,
+          agentId,
+          role: params.role,
+          blueprint,
+          task: params.task,
+          log,
+          signalTool,
+          model,
+          thinkingLevel,
+          cwd: ctx.cwd,
+        });
+        runtime.children.set(agentId, handle);
 
-      // Registry bookkeeping.
-      registry.addAgent({
-        id: agentId,
-        role: params.role,
-        model: modelLabel,
-        status: "running",
-        sessionFile: handle.sessionFile,
-        scope,
-        parent: ORCHESTRATOR_ID,
-        spawnedAt: new Date().toISOString(),
-      });
-      await registry.persist(store);
+        registry.addAgent({
+          id: agentId,
+          role: params.role,
+          model: modelLabel,
+          status: "running",
+          sessionFile: handle.sessionFile,
+          scope,
+          parent: ORCHESTRATOR_ID,
+          spawnedAt: new Date().toISOString(),
+        });
+        await registry.persist(store);
 
-      // Field-notes stub: the specialist appends as it works (things
-      // learned, architecture notes, pitfalls, useful commands). Created at
-      // spawn so the orchestrator's tail reads always resolve and the stub
-      // rides into the spawn prompt's field-notes section.
-      await store.createFieldNotes(agentId, params.role);
-
-      // Spawn command lands in the same log as events — before the
-      // child's run starts, so log order is deterministic.
-      await log.append({
-        from: ORCHESTRATOR_ID,
-        to: agentId,
-        type: "spawn",
-        payload: {
-          summary: `Spawned ${agentId} (${params.role})`,
-          details: params.task,
-          metadata: { model: modelLabel, scope },
-        },
-      });
-
-      // Ownership dashboard line (state.md is orchestrator-owned; registry owns status).
-      await store.recordOwnership(agentId, params.role, scope);
-
-      // Start the run: persona + shared state + task + protocol.
-      const prompt = await buildSpawnPrompt({ store, agentId, role: params.role, blueprint, task: params.task });
-      handle.start(prompt);
+        await log.append({
+          from: ORCHESTRATOR_ID,
+          to: agentId,
+          type: "spawn",
+          payload: {
+            summary: `Spawned ${agentId} (${params.role})`,
+            details: params.task,
+            metadata: { model: modelLabel, scope },
+          },
+        });
+        await store.recordOwnership(agentId, params.role, scope);
+        handle.start(prompt);
+      } catch (error) {
+        handle?.dispose();
+        runtime.children.delete(agentId);
+        if (registry.getAgent(agentId)) {
+          registry.deleteAgent(agentId);
+          await registry.persist(store).catch(() => {});
+        }
+        throw error;
+      }
 
       return {
         content: [
@@ -352,13 +353,14 @@ export function buildOrchestratorTools(): ToolDefinition[] {
             text: [
               `Spawned ${agentId} (${params.role})`,
               `model: ${modelLabel}${thinkingLevel ? ` · thinking: ${thinkingLevel}` : ""}`,
-              `session: ${handle.sessionFile}`,
+              `session: ${handle!.sessionFile}`,
               `task: ${params.task}`,
             ].join("\n"),
           },
         ],
-        details: { agentId, role: params.role, sessionFile: handle.sessionFile },
+        details: { agentId, role: params.role, sessionFile: handle!.sessionFile },
       };
+      });
     },
   });
 

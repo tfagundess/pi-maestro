@@ -21,6 +21,8 @@ export interface MaestroRuntime {
   children: Map<string, ChildSessionHandle>;
   /** Resume operations in flight; prevents duplicate concurrent resumes. */
   resuming: Set<string>;
+  /** Serialized lifecycle mutations; keeps spawn, resume, and stop consistent. */
+  lifecycleQueue: Promise<void>;
   /** Action signals (needs_input / finished / error) the feed has rendered but
    * the orchestrator LLM has not yet been told about. Drained by the
    * `before_agent_start` injection. Per-process, so a restart starts
@@ -39,6 +41,18 @@ export interface MaestroRuntime {
 }
 
 let current: MaestroRuntime | null = null;
+
+export async function withLifecycleLock<T>(runtime: MaestroRuntime, fn: () => Promise<T>): Promise<T> {
+  const previous = runtime.lifecycleQueue;
+  let release!: () => void;
+  runtime.lifecycleQueue = new Promise((resolve) => { release = resolve; });
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
 
 export function setRuntime(runtime: MaestroRuntime): void {
   current = runtime;
@@ -74,6 +88,7 @@ export async function buildRuntime(store: TaskStore): Promise<MaestroRuntime> {
     config: await store.loadConfig(),
     children: new Map(),
     resuming: new Set(),
+    lifecycleQueue: Promise.resolve(),
     attention: [],
     reportedInterrupted: new Set(),
     consumedSignals: new Set(),

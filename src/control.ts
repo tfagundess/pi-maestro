@@ -15,7 +15,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { ORCHESTRATOR_ID, isSignalType, type MaestroEvent, type RegistryAgent } from "./types.ts";
 import { onEventAppended } from "./events.ts";
-import type { MaestroRuntime } from "./runtime.ts";
+import { withLifecycleLock, type MaestroRuntime } from "./runtime.ts";
 import { buildResumePrompt, createChildSession, type ChildSessionHandle } from "./child-session.ts";
 import { readBlueprint } from "./task-store.ts";
 import { assertRealPathInside, safeRelativePath } from "./paths.ts";
@@ -87,8 +87,8 @@ export async function replyToAgent(
   const agent = runtime.registry.getAgent(agentId);
   if (!agent) throw new Error(`Unknown agent: ${agentId}`);
   const target = await findEvent(runtime, replyTo);
-  if (!target) {
-    throw new Error(`Unknown replyTo eventId "${replyTo}" — use the eventId of the signal you are answering (see maestro_history).`);
+  if (!target || target.type !== "needs_input" || target.from !== agentId || target.to !== ORCHESTRATOR_ID) {
+    throw new Error(`replyTo must be a needs_input signal from ${agentId} addressed to the orchestrator.`);
   }
   const event = await runtime.log.append({
     from: ORCHESTRATOR_ID,
@@ -142,6 +142,7 @@ export async function stopAgent(
   agentId: string,
   ticket?: string,
 ): Promise<{ event: MaestroEvent | null; agentId: string; status: string }> {
+  return withLifecycleLock(runtime, async () => {
   const agent = runtime.registry.getAgent(agentId);
   if (!agent) throw new Error(`Unknown agent: ${agentId}`);
 
@@ -179,6 +180,7 @@ export async function stopAgent(
   runtime.registry.setStatus(agentId, "stopped");
   await runtime.registry.persist(runtime.store);
   return { event, agentId, status: "stopped" };
+  });
 }
 
 /** Options for resumeAgent (resolved by the caller from the registry + ctx). */
@@ -207,6 +209,7 @@ export async function resumeAgent(
 
   runtime.resuming.add(agentId);
   try {
+    return await withLifecycleLock(runtime, async () => {
     const event = await runtime.log.append({
       from: ORCHESTRATOR_ID,
       to: agentId,
@@ -247,6 +250,7 @@ export async function resumeAgent(
 
     handle.start(prompt);
     return { event, agentId, sessionFile: handle.sessionFile, status: "running" };
+    });
   } finally {
     runtime.resuming.delete(agentId);
   }
@@ -370,6 +374,7 @@ export function awaitAgent(runtime: MaestroRuntime, agentId: string, timeoutMs: 
   const started = Date.now();
   return new Promise<AwaitResult>((resolve) => {
     let done = false;
+    let claimed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let unsub: (() => void) | undefined;
 
@@ -381,13 +386,25 @@ export function awaitAgent(runtime: MaestroRuntime, agentId: string, timeoutMs: 
       resolve(r);
     };
 
+    const claim = (event: MaestroEvent): void => {
+      if (done || claimed) return;
+      claimed = true;
+      if (timer) clearTimeout(timer);
+      void markConsumed(runtime, event).then(
+        () => finish({ status: "signal", event, waitedMs: Date.now() - started }),
+        () => finish({
+          status: "signal",
+          event,
+          waitedMs: Date.now() - started,
+          note: "Signal received, but cursor persistence failed; it may appear again after restart.",
+        }),
+      );
+    };
+
     // Subscribe FIRST, then cross-check — no gap for a signal to slip in
     // between the log read and the subscription (cross-check path).
     unsub = onEventAppended((event) => {
-      if (!isActionSignal(event, agentId)) return;
-      void markConsumed(runtime, event).finally(() =>
-        finish({ status: "signal", event, waitedMs: Date.now() - started }),
-      );
+      if (isActionSignal(event, agentId)) claim(event);
     });
 
     timer = setTimeout(() => {
@@ -403,8 +420,7 @@ export function awaitAgent(runtime: MaestroRuntime, agentId: string, timeoutMs: 
       const events = await runtime.log.read(watermark + 1);
       const pending = events.find((e) => isActionSignal(e, agentId));
       if (pending) {
-        await markConsumed(runtime, pending);
-        finish({ status: "signal", event: pending, waitedMs: Date.now() - started });
+        claim(pending);
         return;
       }
       // Transcript/session cross-check: the child's run ended with nothing

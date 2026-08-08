@@ -11,7 +11,7 @@
  */
 import { appendFile, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { isCommandType, type MaestroEvent } from "./types.ts";
+import { isCommandType, isSignalType, type MaestroEvent } from "./types.ts";
 import type { TaskStore } from "./task-store.ts";
 
 // ── in-process append notification ─────────────────────────────────────
@@ -19,6 +19,26 @@ import type { TaskStore } from "./task-store.ts";
 // never a delivery path. The feed (the single consumer) reads the log past its
 // cursors; this just tells it to look.
 const appendedListeners = new Set<(event: MaestroEvent) => void>();
+
+function isStoredEvent(value: unknown): value is MaestroEvent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const event = value as Partial<MaestroEvent>;
+  const payload = event.payload;
+  return (
+    typeof event.eventId === "string" &&
+    Number.isSafeInteger(event.sequence) &&
+    event.sequence > 0 &&
+    typeof event.timestamp === "string" &&
+    typeof event.from === "string" &&
+    typeof event.to === "string" &&
+    typeof event.type === "string" &&
+    (isSignalType(event.type) || isCommandType(event.type)) &&
+    !!payload &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    typeof payload.summary === "string"
+  );
+}
 
 export function onEventAppended(fn: (event: MaestroEvent) => void): () => void {
   appendedListeners.add(fn);
@@ -63,8 +83,8 @@ export class EventLog {
       for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
         try {
-          const seq = (JSON.parse(line) as MaestroEvent).sequence;
-          if (Number.isSafeInteger(seq) && seq > 0 && seq >= next) next = seq + 1;
+          const event = JSON.parse(line);
+          if (isStoredEvent(event) && event.sequence >= next) next = event.sequence + 1;
         } catch { /* skip malformed line */ }
       }
     }
@@ -112,8 +132,8 @@ export class EventLog {
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
       try {
-        const evt = JSON.parse(line) as MaestroEvent;
-        if (!Number.isSafeInteger(evt.sequence) || evt.sequence <= 0 || typeof evt.type !== "string") continue;
+        const evt = JSON.parse(line);
+        if (!isStoredEvent(evt)) continue;
         if (evt.sequence >= fromSequence) events.push(evt);
       } catch { /* skip malformed line */ }
     }
