@@ -20,22 +20,20 @@ after(async () => {
 });
 
 function runPi(cwd: string, args: string[], extraEnv: Record<string, string> = {}, timeout = 120_000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const env = { ...process.env, ...extraEnv };
-    delete env.PI_OFFLINE;
-    const child = spawn("pi", ["--thinking", "off", ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => (stdout += chunk));
-    child.stderr.on("data", (chunk) => (stderr += chunk));
-    const timer = setTimeout(() => child.kill(), timeout);
-    child.on("error", reject);
-    child.on("exit", (code, signal) => {
+  const running = startPi(cwd, args, extraEnv);
+  const timer = setTimeout(() => running.child.kill(), timeout);
+  return running.exited.then(
+    ({ code, signal }) => {
       clearTimeout(timer);
-      if (code === 0) resolve(stdout);
-      else reject(new Error(`live pi exited ${code ?? signal}\\n${stdout}\\n${stderr}`));
-    });
-  });
+      const { stdout, stderr } = running.output();
+      if (code === 0) return stdout;
+      throw new Error(`live pi exited ${code ?? signal}\\n${stdout}\\n${stderr}`);
+    },
+    (error) => {
+      clearTimeout(timer);
+      throw error;
+    },
+  );
 }
 
 function startPi(cwd: string, args: string[], extraEnv: Record<string, string> = {}) {
