@@ -1,180 +1,174 @@
-# pi Maestro — Orchestrator Extension
+# pi Maestro
 
-**Version 1.0.1**
+## Durable specialists inside your Pi session
 
-Maestro turns pi into a small team of AI agents.
+pi Maestro turns one Pi conversation into a small, persistent team.
 
-You keep talking to **one** assistant — the *orchestrator*, your normal pi
-session. It plans the work, delegates to specialist agents, answers their
-questions, and only bothers you when a decision is genuinely yours.
+The orchestrator stays in your normal Pi session. Specialists run as real
+embedded Pi sessions with their own transcripts, field notes, models, and
+artifacts. Their work is coordinated through a durable event log, so a restart
+does not erase what happened: you can inspect the history and resume interrupted
+specialists.
 
-Each specialist is its own pi session with its own transcript, model, and
-files. They report back with short, structured messages — *working*, *need an
-answer*, *done*, *failed* — never free-form chatter. Everything is recorded to
-disk, so the whole team survives restarts: kill pi mid-task, come back, resume
-where it left off.
+Unlike ephemeral subagent calls, Maestro gives each specialist continuity.
+Unlike external agent platforms, Maestro keeps orchestration local to your
+project: no Maestro server, dashboard, account, or separate workflow service.
+Your configured model provider may still be remote; Maestro itself stores its
+state locally.
 
-Same machine only. No cloud, no accounts, no servers.
+### The differentiator
 
-## What it looks like
-
-```
-You ── chat ──> Orchestrator (the main pi session)
-                    │  spawns / manages / routes
-        ┌──────────┬┴─────────────┬──────────┐
-      builder-1    reviewer-1    docs-1   ...   (specialists, own sessions)
-```
-
-You say "build this feature". The orchestrator breaks it into tickets, spawns
-a builder and a reviewer, routes their questions back and forth, and keeps
-you informed. You stay in one conversation the whole time.
-
-## Why you'd use it
-
-- **One conversation, many agents.** You manage a team, not helper processes —
-  the orchestrator holds the plan, you hold the steering wheel.
-- **Specialists remember.** Each keeps *field notes* (what it learned) and
-  *artifacts* (what it produced) between tickets. A specialist stays the
-  expert in its area across the whole task.
-- **It survives crashes.** An append-only event log with per-consumer
-  watermarks preserves the recorded workflow across restarts; restart recovery
-  and resume are covered by the local test suites.
-- **You're only interrupted when it matters.** Routine progress goes to a
-  status line, not your chat. Only genuinely human decisions wake you.
-- **Everything is inspectable.** The log, registry, artifacts, and notes are
-  plain files — `cat events.jsonl` tells you exactly what happened.
-
-### Good to know
-
-- **Sequential by default** — one specialist working at a time (a strict
-  guard; no hard cap above that).
-- A specialist's `scope` is advisory — it declares files it owns, but nothing
-  enforces it.
-- Tickets are lines in `state.md` maintained by the orchestrator; there is no
-  separate ticket tool.
-- Free-tier model providers can be flaky — a child may occasionally skip a
-  detail. That's model behavior, not an extension bug.
+- **Embedded:** specialists are Pi sessions, not opaque one-shot calls.
+- **Durable:** events, transcripts, artifacts, and notes live under
+  `.pi/maestro/`.
+- **One conversation:** you talk to the orchestrator; it routes work and
+  escalates only real decisions.
+- **Inspectable:** commands and signals are recorded as plain local files.
+- **Restartable:** interrupted specialists are detected after a crash and can
+  be resumed from their transcripts.
 
 ## Install
 
-1. Install the package:
+Install the package with Pi:
 
-   ```sh
-   pi install npm:pi-maestro
-   ```
+```sh
+pi install npm:pi-maestro
+```
 
-   OR
+Or install directly from GitHub:
 
-   ```sh
-   pi install git:github.com/tfagundess/pi-maestro
-   ```
+```sh
+pi install git:github.com/tfagundess/pi-maestro
+```
 
-2. Restart pi — or type `/reload` to load it without restarting.
+Restart Pi, or use `/reload` to load the extension. Maestro is dormant until
+you explicitly activate it with `/maestro init`.
 
-3. Check it works: run `/maestro init <task-name>` (use any name, e.g.
-   `my-project`). You should see the footer say `maestro · phase: kickoff`.
+## Five-minute start
 
-## Try it in 5 minutes
+### 1. Create or resume a task
 
-1. **Create a task:**
+Inside Pi:
 
-   ```
-   /maestro init my-project
-   ```
+```text
+/maestro init my-project
+```
 
-2. **Define a role** — tell the orchestrator what a specialist is for. Type:
+This creates the task store at `.pi/maestro/my-project/`. Running the command
+again resumes the current store; it does not overwrite existing work.
 
-   > Define a role `builder` with blueprint: implement the requested change,
-   > write a summary to `artifacts/result.md`, then signal finished.
+### 2. Define a role
 
-   (You choose the role name — it becomes the specialist's id prefix.)
+Tell the orchestrator what kind of specialist you need:
 
-3. **Spawn a specialist:**
+```text
+Define a role called builder. It should implement the requested change,
+write a concise summary to artifacts/result.md, and signal finished when done.
+```
 
-   > Spawn `builder-1` to add a line to `result.md` in the current task.
+The role blueprint is saved in `agents/builder.md` and can be reused.
+Built-in roles include `reviewer`, `docs`, and `investigate`.
 
-   A child session starts. Watch the footer: `specialists: 1 running`.
-   Progress stays in the status line — it never floods your chat.
+### 3. Spawn a specialist
 
-4. **When it finishes**, look at what it did:
+```text
+Spawn builder-1 to implement the requested change. Give it scope
+["src/feature.ts", "tests/feature.test.ts"].
+```
 
-   ```sh
-   cat .pi/maestro/my-project/events.jsonl          # the whole exchange
-   cat .pi/maestro/my-project/artifacts/result.md   # its output
-   cat .pi/maestro/my-project/field-notes/builder-1.md # what it learned
-   ```
+The specialist receives its role blueprint, the shared task context, its task,
+and the specialist protocol. It also has standard Pi coding tools and exactly
+one Maestro tool: `maestro_signal`.
 
-## Day to day
+### 4. Wait for the result
 
-### Commands
+The orchestrator normally does this from your instructions:
 
-| Command | What it does |
+```text
+Wait for builder-1 to finish. If it needs a decision, resolve it from the
+project context when possible; ask me only if the decision is genuinely mine.
+```
+
+You can also ask it to inspect the work:
+
+```text
+Show me builder-1's latest signal, transcript tail, field notes, and result artifact.
+```
+
+## Commands
+
+| Command | Purpose |
 |---|---|
-| `/maestro init <name>` | Create a task store here (no name → defaults to `task`) |
-| `/maestro status` | Current phase, specialists, tickets, blocked work |
-| `/maestro stop <agentId>` | Pause a specialist (it can be resumed later) |
+| `/maestro init <name>` | Create or resume the current task store |
+| `/maestro status` | Show specialists, pending signals, and task status |
+| `/maestro stop <agentId>` | Stop a specialist; it can be resumed later |
 
-### What the orchestrator can do
+Maestro commands are an explicit control surface. Existing task stores do not
+activate automatically when Pi starts.
 
-The orchestrator LLM has these tools (you can mention them in your prompts):
+## Orchestrator tools
+
+The orchestrator can use these tools during a conversation:
 
 | Tool | Purpose |
 |---|---|
-| `maestro_spawn` | Start a specialist (role, task, model, scope — plus an optional `name`) |
-| `maestro_define_role` | Save a reusable role definition |
-| `maestro_reply` / `maestro_send` | Answer a specialist's question / send it an instruction |
-| `maestro_await` | Wait for a specialist's next signal |
-| `maestro_stop` / `maestro_resume` | Pause and restart a specialist |
-| `maestro_status` | What's happening right now |
-| `maestro_history` / `maestro_read_transcript` / `maestro_read_field_notes` / `maestro_read_artifact` | Audit anything: event log, transcripts, notes, artifacts |
-| `maestro_init` | Create/resume the task store after Maestro has been activated with `/maestro init` |
+| `maestro_spawn` | Start a specialist from a role blueprint |
+| `maestro_define_role` | Save or replace a reusable role blueprint |
+| `maestro_await` | Wait for `needs_input`, `finished`, or `error` |
+| `maestro_reply` | Answer a specialist's `needs_input` signal |
+| `maestro_send` | Send an instruction or forward a sibling's message |
+| `maestro_stop` / `maestro_resume` | Stop or restart a specialist |
+| `maestro_status` | List agents and pending signals |
+| `maestro_history` | Read the event timeline |
+| `maestro_read_transcript` | Read a bounded transcript tail |
+| `maestro_read_field_notes` | Read a bounded field-notes tail |
+| `maestro_read_artifact` | Read a bounded artifact head |
+| `maestro_init` | Create or resume the store after activation |
 
-### What a specialist can do
+A spawn can specify:
 
-Exactly one thing: **`maestro_signal`** — one of:
+- `role` — a built-in or custom blueprint;
+- `name` — optional specialist identity, otherwise `<role>-1`, `<role>-2`, ...;
+- `task` — the specialist's instruction;
+- `model` — optional `provider/modelId`, otherwise the orchestrator's model;
+- `scope` — advisory ownership of files or modules.
 
-- `progress` — a status update (footer only, never wakes you)
-- `needs_input` — *"I can't continue without an answer"* (to you, or to the
-  orchestrator)
-- `finished` — work done, references its artifacts
-- `error` — failed, says what it tried
+## Specialist signals
 
-A specialist cannot spawn others, cannot touch `state.md` or tickets, and
-never talks to you directly.
+Specialists communicate with the orchestrator through structured signals:
 
-### Questions and escalation
+- `progress` — a brief update shown in the status line, but not as a card and
+  never used to wake the orchestrator;
+- `needs_input` — the specialist cannot continue without an answer;
+- `finished` — the current work is complete;
+- `error` — the specialist failed and reports what it tried.
 
-When a specialist signals `needs_input` with `requires: human`, the
-orchestrator asks you — e.g. *"a specialist can't proceed until it picks a
-port — can I tell it to use 3001?"* Answer normally; the orchestrator routes
-your reply back to the specialist. Everything else it resolves itself from
-task state first.
+Specialists should put durable outputs in `artifacts/` and keep their notes in
+`field-notes/<agentId>.md`. The orchestrator routes replies and sibling
+messages; specialists do not talk to each other or to the human directly.
 
-### After a crash
+## Recovery and resume
 
-Restart Pi in the same directory, then run `/maestro init` to recover the task.
-Live embedded children are marked `interrupted`, pending signals remain in the
-event log, and `maestro_resume` can reopen a child's transcript. Maestro stays
-dormant on restart until you run that command; recovery is persisted state, not
-a sandbox or a guarantee that external model work was completed exactly once.
+After Pi crashes or is killed, start Pi in the same project directory and run:
 
-### Names and roles
-
-A specialist's id is its role with a number by default: role `auditor` →
-`auditor-1`, then `auditor-2`. Want a named specialist instead? Pass a `name`
-at spawn and the id becomes exactly that name, with the role kept separate:
-
-```
-maestro_spawn(role: "qa", name: "charles", task: "…")
+```text
+/maestro init my-project
 ```
 
-…spawns **charles**, a QA specialist — its own field notes, transcript, and
-status, with `role: qa` recorded alongside. Omit `name` and it's `<role>-N`
-as before.
+Specialists that were `running` or `blocked` are marked `interrupted`. Their
+pending signals remain in the event log, and `maestro_resume` can reopen a
+specialist's transcript in a fresh embedded session.
 
-### Settings (`config.json` in the task store)
+Set `autoResume` to `true` in `config.json` if activation should automatically
+reattach interrupted specialists. The default is `false`, so you decide what
+to resume.
 
-Written on first init, with defaults:
+Recovery preserves recorded state; it does not guarantee that external model
+work completed exactly once.
+
+## Settings
+
+The task store's `config.json` starts with:
 
 ```json
 {
@@ -186,25 +180,41 @@ Written on first init, with defaults:
 }
 ```
 
-- `maxConcurrentSpecialists: 1` — sequential mode (strict guard).
-- `autoResume` — resume interrupted specialists automatically on restart
-  (default `false` — you decide).
-- `reviewRequired` / `approvalRules` — advisory hints for when the orchestrator
-  should add a review step or ask you for approval; they are not enforcement.
-- `spawnThreshold` — advisory guidance for when the orchestrator should delegate.
+- `maxConcurrentSpecialists: 1` enables the strict sequential guard. Higher
+  values relax that guard; they are not a hard scheduler limit.
+- `autoResume` controls whether interrupted specialists are reattached on
+  activation.
+- `reviewRequired`, `approvalRules`, and `spawnThreshold` are advisory prompt
+  guidance. They do not enforce approvals, reviews, permissions, or sandboxing.
 
-## Where everything lives
+## Where files live
 
-```
+```text
 .pi/maestro/<task-name>/
-├── state.md            # the orchestrator's dashboard: goal, phase, tickets, decisions
-├── agents.json         # who the specialists are and their status
-├── events.jsonl        # append-only log of every signal and command
-├── consumer.json       # read-watermarks (what's been seen / consumed)
-├── config.json         # the settings above
-├── tickets/            # ticket files (orchestrator-owned)
-├── artifacts/          # what specialists produced
-├── field-notes/        # what specialists learned
-├── agents/             # reusable role definitions
-└── sessions/           # specialist transcripts
+├── state.md          # orchestrator dashboard: goal, phase, decisions, ownership
+├── agents.json       # specialist registry and statuses
+├── events.jsonl      # append-only signals and commands
+├── consumer.json     # UI and orchestrator read cursors
+├── config.json       # task policies
+├── tickets/          # ticket files maintained by the orchestrator
+├── artifacts/        # specialist-produced outputs
+├── field-notes/      # specialist working notes
+├── agents/           # reusable role blueprints
+└── sessions/         # durable specialist transcripts
 ```
+
+Everything is local to the project and readable with ordinary filesystem tools.
+
+## Limits and expectations
+
+- Maestro runs on the same machine as Pi and has no separate orchestration
+  server.
+- Scope declarations help the orchestrator coordinate ownership; they are
+  advisory and are not a filesystem sandbox.
+- The default model is sequential: spawn one active specialist, await its
+  signal, then decide what happens next.
+- Model providers can be unavailable or inconsistent. A specialist may skip a
+  detail; inspect its signal, transcript, artifact, and field notes before
+  deciding what to do next.
+- Persisted state and specialist-authored content are data. They do not
+  override the orchestrator protocol or the human's request.
